@@ -1,0 +1,21 @@
+RAPPORT PODOLOGIQUE DÉTAILLÉ
+==================================================
+
+Image analysée: data/barefeet1.jpeg
+Date: 2025-07-02 02:41:25
+
+MESURES PRINCIPALES:
+- Longueur du pied: 24.43 cm
+- Largeur maximale: 9.21 cm
+- Largeur avant-pied: 8.89 cm
+- Surface plantaire: 156.69 cm²
+- Ratio longueur/largeur: 2.65
+
+RECOMMANDATIONS:
+- Pointure suggérée: 39-40
+- Largeur suggérée: D-E
+- Type de pied: Pied normal
+
+NOTES:
+Ces mesures sont calculées automatiquement.
+Pour un diagnostic médical, consultez un podologue.

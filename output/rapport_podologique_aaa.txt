@@ -1,0 +1,21 @@
+RAPPORT PODOLOGIQUE DÉTAILLÉ
+==================================================
+
+Image analysée: data/aaa.jpg
+Date: 2025-07-02 02:41:37
+
+MESURES PRINCIPALES:
+- Longueur du pied: 15.80 cm
+- Largeur maximale: 13.76 cm
+- Largeur avant-pied: 13.35 cm
+- Surface plantaire: 79.91 cm²
+- Ratio longueur/largeur: 1.15
+
+RECOMMANDATIONS:
+- Pointure suggérée: Mesure incorrecte
+- Largeur suggérée: N/A
+- Type de pied: Pied large
+
+NOTES:
+Ces mesures sont calculées automatiquement.
+Pour un diagnostic médical, consultez un podologue.

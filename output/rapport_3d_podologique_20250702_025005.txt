@@ -1,0 +1,28 @@
+RAPPORT PODOLOGIQUE 3D DÉTAILLÉ
+==================================================
+
+Date: 2025-07-02 02:50:05
+
+IMAGES ANALYSÉES:
+- Vue de dessus: data/barefeet1.jpeg
+- Vue côté gauche: data/aaa.jpg
+- Vue côté droit: data/1.jpg
+
+MESURES PRINCIPALES (Vue de dessus):
+- Longueur du pied: 24.43 cm
+- Largeur maximale: 9.21 cm
+- Largeur avant-pied: 8.89 cm
+- Surface plantaire: 156.69 cm²
+- Ratio longueur/largeur: 2.65
+
+MESURES LATÉRALES:
+- Profil gauche longueur: 3.12 cm
+- Profil gauche hauteur: 6.24 cm
+- Hauteur arche gauche: 5.52 cm
+- Profil droit longueur: 1.05 cm
+- Profil droit hauteur: 1.77 cm
+- Hauteur arche droite: 1.56 cm
+
+NOTES:
+Ce rapport a été généré automatiquement.
+Pour un diagnostic médical, consultez un podologue.
