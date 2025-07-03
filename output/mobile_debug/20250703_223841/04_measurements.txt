@@ -1,7 +1,0 @@
-MESURES MOBILES - ad.jpg
-========================================
-Méthode: SAM
-Confiance: 74.6864640712738%
-Longueur: 22.52 cm
-Largeur: 20.42 cm
-Ratio: 1.10

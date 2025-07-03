@@ -1,7 +1,0 @@
-MESURES MOBILES - gg.jpg
-========================================
-Méthode: SAM
-Confiance: 74.75076913833618%
-Longueur: 31.55 cm
-Largeur: 20.26 cm
-Ratio: 1.56

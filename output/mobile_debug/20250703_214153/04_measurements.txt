@@ -1,7 +1,0 @@
-MESURES MOBILES - av.jpg
-========================================
-Méthode: SAM
-Confiance: 99.73098963499069%
-Longueur: 32.30 cm
-Largeur: 19.86 cm
-Ratio: 1.63

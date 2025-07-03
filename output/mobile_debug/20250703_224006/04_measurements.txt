@@ -1,7 +1,0 @@
-MESURES MOBILES - ag.jpg
-========================================
-Méthode: SAM
-Confiance: 84.7639736533165%
-Longueur: 22.84 cm
-Largeur: 20.74 cm
-Ratio: 1.10
