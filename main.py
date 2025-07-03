@@ -87,42 +87,42 @@ def process_single_image(image_path, view_type="single"):
             os.makedirs(view_output_dir)
 
         print("🔄 Préprocessing...")
-        preprocessedOimg = preprocess(oimg)
+    preprocessedOimg = preprocess(oimg)
         cv2.imwrite(f'{view_output_dir}/preprocessedOimg.jpg', preprocessedOimg)
 
         print("🔄 Clustering K-means...")
-        clusteredImg = kMeans_cluster(preprocessedOimg)
+    clusteredImg = kMeans_cluster(preprocessedOimg)
         cv2.imwrite(f'{view_output_dir}/clusteredImg.jpg', clusteredImg)
 
         print("🔄 Détection des contours...")
-        edgedImg = edgeDetection(clusteredImg)
+    edgedImg = edgeDetection(clusteredImg)
         cv2.imwrite(f'{view_output_dir}/edgedImg.jpg', edgedImg)
 
-        boundRect, contours, contours_poly, img = getBoundingBox(edgedImg)
-        
+    boundRect, contours, contours_poly, img = getBoundingBox(edgedImg)
+
         if len(boundRect) < 2:
             print(f"❌ Pas assez de contours détectés pour {view_type}")
             return None
-            
+
         pdraw = drawCnt(boundRect[1], contours, contours_poly, img)
         cv2.imwrite(f'{view_output_dir}/pdraw.jpg', pdraw)
 
         print("🔄 Cropping et analyse...")
-        croppedImg, pcropedImg = cropOrig(boundRect[1], clusteredImg)
+    croppedImg, pcropedImg = cropOrig(boundRect[1], clusteredImg)
         cv2.imwrite(f'{view_output_dir}/croppedImg.jpg', croppedImg)
-        
-        newImg = overlayImage(croppedImg, pcropedImg)
+
+    newImg = overlayImage(croppedImg, pcropedImg)
         cv2.imwrite(f'{view_output_dir}/newImg.jpg', newImg)
 
         print("🔄 Analyse détaillée du pied...")
-        fedged = edgeDetection(newImg)
-        fboundRect, fcnt, fcntpoly, fimg = getBoundingBox(fedged)
+    fedged = edgeDetection(newImg)
+    fboundRect, fcnt, fcntpoly, fimg = getBoundingBox(fedged)
         
         if len(fboundRect) < 3:
             print(f"❌ Contour du pied non détecté pour {view_type}")
             return None
             
-        fdraw = drawCnt(fboundRect[2], fcnt, fcntpoly, fimg)
+    fdraw = drawCnt(fboundRect[2], fcnt, fcntpoly, fimg)
         cv2.imwrite(f'{view_output_dir}/fdraw.jpg', fdraw)
 
         print("📐 Calcul des mesures podologiques...")

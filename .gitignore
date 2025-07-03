@@ -4,5 +4,6 @@ __pycache__/
 *.jpeg
 *.png
 *.bmp
+*.pth
 output/
 data/
