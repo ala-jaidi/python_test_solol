@@ -1,0 +1,7 @@
+MESURES MOBILES - tt.jpg
+========================================
+Méthode: SAM
+Confiance: 89.66410338878632%
+Longueur: 32.27 cm
+Largeur: 20.35 cm
+Ratio: 1.59

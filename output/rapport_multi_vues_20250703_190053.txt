@@ -1,0 +1,19 @@
+RAPPORT PODOLOGIQUE MULTI-VUES
+==================================================
+
+Date: 2025-07-03 19:00:53
+
+IMAGES ANALYSÉES:
+- top: data/tt.jpg
+- left: data/gg.jpg
+- right: data/dd.jpg
+
+MESURES PRINCIPALES:
+- Longueur du pied: 9.00 cm
+- Largeur maximale: 6.46 cm
+- Surface plantaire: 28.71 cm²
+
+RECOMMANDATIONS:
+- Pointure suggérée: Mesure incorrecte
+- Largeur suggérée: N/A
+- Type de pied: Pied large

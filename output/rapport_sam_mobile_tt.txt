@@ -1,0 +1,16 @@
+RAPPORT PODOLOGUE MOBILE
+==============================
+
+Image: data/tt.jpg
+Méthode: SAM
+Mobile: True
+
+MESURES:
+- Longueur: 32.3 cm
+- Largeur: 20.3 cm
+- Ratio: 1.59
+
+RECOMMANDATIONS:
+- Pointure: 45+
+- Type: Pied large
+- Qualité: 26.899231016635895%
