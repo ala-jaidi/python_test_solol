@@ -32,7 +32,7 @@ def list_available_images():
         images.extend(glob.glob(f'data/{ext.upper()}'))
     return list(set(images))
 
-def process_single_image_smart(image_path, view_type="single", method="auto", mobile_mode=False):
+def process_single_image_smart(image_path, view_type="single", method="auto", mobile_mode=False, ref_width_mm=210, ref_height_mm=297):
     """
     Traite une image avec choix intelligent de méthode
     
@@ -47,7 +47,7 @@ def process_single_image_smart(image_path, view_type="single", method="auto", mo
         
         if method in ["auto", "sam"]:
             # Utiliser SAM mobile optimisé
-            measurements = process_foot_for_mobile_app(image_path, save_debug=True)
+            measurements = process_foot_for_mobile_app(image_path, save_debug=True, ref_width_mm=ref_width_mm, ref_height_mm=ref_height_mm)
             
             if 'error' not in measurements:
                 return measurements
@@ -56,19 +56,19 @@ def process_single_image_smart(image_path, view_type="single", method="auto", mo
         
         # Fallback K-means si SAM échoue
         print("🔄 Fallback K-means...")
-        return process_single_image(image_path, view_type)
+        return process_single_image(image_path, view_type, ref_width_mm, ref_height_mm)
     
     elif method == "sam" and SAM_MOBILE_AVAILABLE:
         # SAM standard (non-mobile)
-        measurements = process_foot_for_mobile_app(image_path, save_debug=True)
+        measurements = process_foot_for_mobile_app(image_path, save_debug=True, ref_width_mm=ref_width_mm, ref_height_mm=ref_height_mm)
         return measurements if 'error' not in measurements else None
     
     else:
         # K-means standard (votre code existant)
-        return process_single_image(image_path, view_type)
+        return process_single_image(image_path, view_type, ref_width_mm, ref_height_mm)
 
-def process_single_image(image_path, view_type="single"):
-    """Votre fonction existante (inchangée)"""
+def process_single_image(image_path, view_type="single", ref_width_mm=210, ref_height_mm=297):
+    """Votre fonction existante (inchangée) avec support d'un objet de référence"""
     print(f"\n📸 Traitement K-means de l'image {view_type}: {image_path}")
     
     try:
@@ -87,18 +87,18 @@ def process_single_image(image_path, view_type="single"):
             os.makedirs(view_output_dir)
 
         print("🔄 Préprocessing...")
-    preprocessedOimg = preprocess(oimg)
+        preprocessedOimg = preprocess(oimg)
         cv2.imwrite(f'{view_output_dir}/preprocessedOimg.jpg', preprocessedOimg)
 
         print("🔄 Clustering K-means...")
-    clusteredImg = kMeans_cluster(preprocessedOimg)
+        clusteredImg = kMeans_cluster(preprocessedOimg)
         cv2.imwrite(f'{view_output_dir}/clusteredImg.jpg', clusteredImg)
 
         print("🔄 Détection des contours...")
-    edgedImg = edgeDetection(clusteredImg)
+        edgedImg = edgeDetection(clusteredImg)
         cv2.imwrite(f'{view_output_dir}/edgedImg.jpg', edgedImg)
 
-    boundRect, contours, contours_poly, img = getBoundingBox(edgedImg)
+        boundRect, contours, contours_poly, img = getBoundingBox(edgedImg)
 
         if len(boundRect) < 2:
             print(f"❌ Pas assez de contours détectés pour {view_type}")
@@ -108,34 +108,34 @@ def process_single_image(image_path, view_type="single"):
         cv2.imwrite(f'{view_output_dir}/pdraw.jpg', pdraw)
 
         print("🔄 Cropping et analyse...")
-    croppedImg, pcropedImg = cropOrig(boundRect[1], clusteredImg)
+        croppedImg, pcropedImg = cropOrig(boundRect[1], clusteredImg)
         cv2.imwrite(f'{view_output_dir}/croppedImg.jpg', croppedImg)
 
-    newImg = overlayImage(croppedImg, pcropedImg)
+        newImg = overlayImage(croppedImg, pcropedImg)
         cv2.imwrite(f'{view_output_dir}/newImg.jpg', newImg)
 
         print("🔄 Analyse détaillée du pied...")
-    fedged = edgeDetection(newImg)
-    fboundRect, fcnt, fcntpoly, fimg = getBoundingBox(fedged)
-        
+        fedged = edgeDetection(newImg)
+        fboundRect, fcnt, fcntpoly, fimg = getBoundingBox(fedged)
+
         if len(fboundRect) < 3:
             print(f"❌ Contour du pied non détecté pour {view_type}")
             return None
-            
-    fdraw = drawCnt(fboundRect[2], fcnt, fcntpoly, fimg)
+
+        fdraw = drawCnt(fboundRect[2], fcnt, fcntpoly, fimg)
         cv2.imwrite(f'{view_output_dir}/fdraw.jpg', fdraw)
 
         print("📐 Calcul des mesures podologiques...")
-        measurements = calcAdvancedFootMeasures(pcropedImg, fboundRect, fcnt)
-        
+        measurements = calcAdvancedFootMeasures(pcropedImg, fboundRect, fcnt, ref_width_mm, ref_height_mm)
+
         # Ajouter métadonnées K-means
         measurements['segmentation_method'] = 'K-means'
         measurements['mobile_optimized'] = False
-        
+
         if measurements['length'] < 15 or measurements['length'] > 35:
             print(f"⚠️  ATTENTION: Mesures probablement incorrectes pour {view_type}")
             print(f"   Longueur détectée: {measurements['length']:.2f} cm")
-        
+
         return measurements
         
     except Exception as e:
@@ -217,7 +217,7 @@ def generate_mobile_report(measurements, image_path):
     
     return {'shoe_size': 'Indéterminé', 'foot_type': 'Indéterminé', 'quality_score': 0}
 
-def compare_methods(image_path):
+def compare_methods(image_path, ref_width_mm=210, ref_height_mm=297):
     """Compare SAM mobile vs K-means sur la même image"""
     print(f"\n⚔️  COMPARAISON SAM MOBILE vs K-MEANS")
     print(f"📸 Image: {os.path.basename(image_path)}")
@@ -227,7 +227,7 @@ def compare_methods(image_path):
     # Test K-means
     print("\n1️⃣ Test K-means:")
     start_time = datetime.now()
-    kmeans_result = process_single_image_smart(image_path, "compare_kmeans", "kmeans", mobile_mode=False)
+    kmeans_result = process_single_image_smart(image_path, "compare_kmeans", "kmeans", mobile_mode=False, ref_width_mm=ref_width_mm, ref_height_mm=ref_height_mm)
     kmeans_time = (datetime.now() - start_time).total_seconds()
     
     if kmeans_result:
@@ -245,7 +245,7 @@ def compare_methods(image_path):
     if SAM_MOBILE_AVAILABLE:
         print("\n2️⃣ Test SAM Mobile:")
         start_time = datetime.now()
-        sam_result = process_single_image_smart(image_path, "compare_sam", "sam", mobile_mode=True)
+        sam_result = process_single_image_smart(image_path, "compare_sam", "sam", mobile_mode=True, ref_width_mm=ref_width_mm, ref_height_mm=ref_height_mm)
         sam_time = (datetime.now() - start_time).total_seconds()
         
         if sam_result and 'error' not in sam_result:
@@ -318,13 +318,13 @@ def compare_methods(image_path):
     
     return results
 
-def quick_measurement_api(image_path):
+def quick_measurement_api(image_path, ref_width_mm=210, ref_height_mm=297):
     """API ultra-rapide pour application mobile"""
     if SAM_MOBILE_AVAILABLE:
-        return quick_foot_measurement(image_path)
+        return quick_foot_measurement(image_path, ref_width_mm=ref_width_mm, ref_height_mm=ref_height_mm)
     else:
         # Fallback K-means simplifié
-        measurements = process_single_image(image_path, "quick")
+        measurements = process_single_image(image_path, "quick", ref_width_mm, ref_height_mm)
         if measurements:
             return {
                 'length_cm': round(measurements.get('length', 0), 1),
@@ -353,18 +353,25 @@ def main():
                        help='Mesure ultra-rapide (API mobile)')
     parser.add_argument('--compare-methods', action='store_true',
                        help='Comparer SAM vs K-means')
+    parser.add_argument('--reference', choices=['a4', 'credit_card'], default='a4',
+                       help="Objet de référence pour l'échelle")
     
     # Argument pour image unique
     parser.add_argument('image', nargs='?', help='Image à analyser')
     
     args = parser.parse_args()
+
+    if args.reference == 'a4':
+        ref_width_mm, ref_height_mm = 210, 297
+    else:
+        ref_width_mm, ref_height_mm = 85.6, 53.98
     
     # Mode comparaison
     if args.compare_methods:
         if args.image:
             image_path = f'data/{args.image}' if not args.image.startswith('data/') else args.image
             if os.path.exists(image_path):
-                compare_methods(image_path)
+                compare_methods(image_path, ref_width_mm, ref_height_mm)
             else:
                 print(f"❌ Image non trouvée: {image_path}")
         else:
@@ -376,7 +383,7 @@ def main():
         if args.image:
             image_path = f'data/{args.image}' if not args.image.startswith('data/') else args.image
             if os.path.exists(image_path):
-                result = quick_measurement_api(image_path)
+                result = quick_measurement_api(image_path, ref_width_mm, ref_height_mm)
                 print("\n📱 MESURE RAPIDE:")
                 print(f"   Longueur: {result.get('length_cm', 'N/A')} cm")
                 print(f"   Largeur: {result.get('width_cm', 'N/A')} cm")
@@ -416,7 +423,8 @@ def main():
         
         # Traitement selon le mode
         measurements = process_single_image_smart(
-            image_path, "single", args.method, args.mobile
+            image_path, "single", args.method, args.mobile,
+            ref_width_mm=ref_width_mm, ref_height_mm=ref_height_mm
         )
         
         if measurements and 'error' not in measurements:

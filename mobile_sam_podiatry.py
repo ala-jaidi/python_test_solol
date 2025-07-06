@@ -299,7 +299,7 @@ class MobileSAMFootSegmenter:
 
 # ===== FONCTIONS PRINCIPALES POUR L'APPLICATION =====
 
-def process_foot_for_mobile_app(image_path, save_debug=False):
+def process_foot_for_mobile_app(image_path, save_debug=False, ref_width_mm=210, ref_height_mm=297):
     """
     Fonction principale pour application mobile podologue
     
@@ -309,6 +309,8 @@ def process_foot_for_mobile_app(image_path, save_debug=False):
     
     Returns:
         dict: Mesures complètes + métadonnées
+        ref_width_mm: Largeur de l'objet de référence en mm
+        ref_height_mm: Hauteur de l'objet de référence en mm
     """
     print(f"\n📱 TRAITEMENT MOBILE PODOLOGUE: {os.path.basename(image_path)}")
     
@@ -334,7 +336,7 @@ def process_foot_for_mobile_app(image_path, save_debug=False):
     
     # Traitement avec le pipeline existant adapté
     try:
-        measurements = process_with_mask(original_image, foot_mask, segmentation_result)
+        measurements = process_with_mask(original_image, foot_mask, segmentation_result, ref_width_mm, ref_height_mm)
         
         # Ajouter métadonnées mobiles
         measurements.update({
@@ -355,7 +357,7 @@ def process_foot_for_mobile_app(image_path, save_debug=False):
     except Exception as e:
         return {'error': f"Erreur traitement: {e}"}
 
-def process_with_mask(original_image, foot_mask, segmentation_result):
+def process_with_mask(original_image, foot_mask, segmentation_result, ref_width_mm=210, ref_height_mm=297):
     """
     Traite l'image en utilisant le masque SAM au lieu du pipeline K-means
     """
@@ -386,7 +388,7 @@ def process_with_mask(original_image, foot_mask, segmentation_result):
     pcropedImg = original_image[y1:y2, x1:x2]
     
     # Calculer les mesures avec les fonctions existantes
-    measurements = calcAdvancedFootMeasures(pcropedImg, fboundRect, fcnt)
+    measurements = calcAdvancedFootMeasures(pcropedImg, fboundRect, fcnt, ref_width_mm, ref_height_mm)
     
     # Validation spécifique mobile
     if measurements['length'] < 10 or measurements['length'] > 40:
@@ -422,12 +424,12 @@ def save_debug_images(original_image, foot_mask, measurements, image_path):
     
     print(f"🔍 Debug sauvegardé: {debug_dir}")
 
-def quick_foot_measurement(image_path):
+def quick_foot_measurement(image_path, ref_width_mm=210, ref_height_mm=297):
     """
     Version ultra-rapide pour application mobile
     Retourne seulement longueur et largeur
     """
-    measurements = process_foot_for_mobile_app(image_path, save_debug=False)
+    measurements = process_foot_for_mobile_app(image_path, save_debug=False, ref_width_mm=ref_width_mm, ref_height_mm=ref_height_mm)
     
     if 'error' in measurements:
         return measurements
