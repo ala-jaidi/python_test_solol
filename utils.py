@@ -89,7 +89,7 @@ def drawCnt(bRect, contours, cntPoly, img):
     
     return drawing
 
-def calcFeetSize(pcropedImg, fboundRect):
+def calcFeetSize(pcropedImg, fboundRect, ref_width_mm=210, ref_height_mm=297):
     x1, y1, w1, h1 = 0, 0, pcropedImg.shape[1], pcropedImg.shape[0]
     y2 = int(h1/10)
     x2 = int(w1/10)
@@ -99,8 +99,8 @@ def calcFeetSize(pcropedImg, fboundRect):
     ph = pcropedImg.shape[0]
     pw = pcropedImg.shape[1]
     
-    opw = 210  # A4 width in mm
-    oph = 297  # A4 height in mm
+    opw = ref_width_mm
+    oph = ref_height_mm
     
     ofs = 0.0
     if fw > fh:
@@ -110,15 +110,15 @@ def calcFeetSize(pcropedImg, fboundRect):
     
     return ofs
 
-def calcFootWidth(pcropedImg, fboundRect, fcnt):
+def calcFootWidth(pcropedImg, fboundRect, fcnt, ref_width_mm=210, ref_height_mm=297):
     """Calculate foot width using detected contour"""
     x1, y1, w1, h1 = 0, 0, pcropedImg.shape[1], pcropedImg.shape[0]
     y2 = int(h1/10)
     x2 = int(w1/10)
     
-    # A4 dimensions in mm
-    opw = 210
-    oph = 297
+    # Reference object dimensions in mm
+    opw = ref_width_mm
+    oph = ref_height_mm
     
     # Paper dimensions in pixels
     ph = pcropedImg.shape[0]
@@ -141,10 +141,10 @@ def calcFootWidth(pcropedImg, fboundRect, fcnt):
     foot_width_mm = fw * ratio_x
     return foot_width_mm
 
-def calcFootSideLengths(pcropedImg, foot_contour):
+def calcFootSideLengths(pcropedImg, foot_contour, ref_width_mm=210, ref_height_mm=297):
     """Calculate left and right side lengths of foot in cm"""
-    opw = 210
-    oph = 297
+    opw = ref_width_mm
+    oph = ref_height_mm
     ph, pw = pcropedImg.shape[:2]
     ratio_x = opw / pw
     ratio_y = oph / ph
@@ -170,15 +170,23 @@ def calcFootSideLengths(pcropedImg, foot_contour):
     
     return arc_len(left_pts), arc_len(right_pts)
 
-def calcAdvancedFootMeasures(pcropedImg, fboundRect, fcnt):
-    """Calculate advanced foot measurements for podiatrists"""
+def calcAdvancedFootMeasures(pcropedImg, fboundRect, fcnt, ref_width_mm=210, ref_height_mm=297):
+    """Calculate advanced foot measurements for podiatrists
+
+    Args:
+        pcropedImg: Cropped image of the foot
+        fboundRect: Bounding boxes from detection
+        fcnt: Contours of the foot
+        ref_width_mm: Reference object width in millimeters
+        ref_height_mm: Reference object height in millimeters
+    """
     measurements = {}
     
-    # A4 dimensions in mm
-    opw = 210
-    oph = 297
+    # Reference object dimensions in mm
+    opw = ref_width_mm
+    oph = ref_height_mm
     
-    # Paper dimensions in pixels
+    # Cropped image dimensions in pixels
     ph = pcropedImg.shape[0]
     pw = pcropedImg.shape[1]
     
@@ -187,10 +195,10 @@ def calcAdvancedFootMeasures(pcropedImg, fboundRect, fcnt):
     ratio_y = oph / ph
     
     # Length (from calcFeetSize)
-    measurements['length'] = calcFeetSize(pcropedImg, fboundRect) / 10  # in cm
+    measurements['length'] = calcFeetSize(pcropedImg, fboundRect, ref_width_mm, ref_height_mm) / 10  # in cm
     
     # Width
-    measurements['width'] = calcFootWidth(pcropedImg, fboundRect, fcnt) / 10  # in cm
+    measurements['width'] = calcFootWidth(pcropedImg, fboundRect, fcnt, ref_width_mm, ref_height_mm) / 10  # in cm
     
     if len(fcnt) > 2:
         foot_contour = fcnt[2]
@@ -224,7 +232,7 @@ def calcAdvancedFootMeasures(pcropedImg, fboundRect, fcnt):
         measurements['forefoot_width'] = max_forefoot_width
         
         # Side lengths
-        left_length, right_length = calcFootSideLengths(pcropedImg, foot_contour)
+        left_length, right_length = calcFootSideLengths(pcropedImg, foot_contour, ref_width_mm, ref_height_mm)
         measurements['left_side_length'] = left_length
         measurements['right_side_length'] = right_length
         

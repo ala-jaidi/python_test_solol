@@ -6,6 +6,7 @@
 * Install required packages: `pip install opencv-python scikit-learn scikit-image matplotlib imutils`
 * Put any image in the "data" folder
 * Run: `python main.py your_image.jpg` or just `python main.py` to see available images
+* Use `--reference credit_card` if a credit card is used as the scale object
 
 ## Usage Examples
 ```bash
@@ -36,7 +37,8 @@ python main.py
 * Sklearn
 
 ## Assumptions
-* Printer Paper is used as a reference (Height/Width is known and White background will help in Preprocessing)
+* Printer Paper is used as a reference (Height/Width is known and White background will help in Preprocessing). You can also use a credit card by specifying `--reference credit_card`.
+  A standard credit card measures **85.6mm x 53.98mm**.
 * Foot should be in center, touching one edge of paper.
 * Floor color should be different than white. 
 * Image should be clicked form top angle. 
@@ -66,7 +68,7 @@ python main.py
 
 ## Limitations
 * If floor color is white, then it will difficult to segment the paper. 
-* Feet should not go out of the paper. Currently A4 size printer paper has ben chosen as reference. To fit all sizes, A1 paper can be taken as reference.
+* Feet should not go out of the reference object. With `--reference a4` a sheet of A4 paper is assumed. When using a credit card (`--reference credit_card`), ensure it is fully visible.
 * If there is no closed curv after edge detection, its difficult to find bounding box. Only closed curv is considered as a contour. And bounding box is generated on top of that. As it can be seen in the below image, bounding box is not generated on feet but only on the paper.
 <p align="center">
   <img src="./images/wrongcnt.png" width=70% height=70% >
