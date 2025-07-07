@@ -1,6 +1,9 @@
 import numpy as np
 import pytest
-import types, sys
+import types, sys, os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+import cv2_stub as cv2
+sys.modules['cv2'] = cv2
 
 sys.modules['torch'] = types.ModuleType('torch')
 sys.modules['torch'].cuda = types.SimpleNamespace(is_available=lambda: False)
