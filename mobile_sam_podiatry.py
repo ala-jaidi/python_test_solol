@@ -487,7 +487,7 @@ class MobileSAMPodiatryPipeline:
         instep_info = estimateInstepHeightRobust(foot_contour, ratio_mm, ratio_mm)
         arch_info = analyzeArchSupportRobust(foot_contour, ratio_mm, ratio_mm)
         left_len, right_len = self._calculate_side_lengths(foot_contour, ratio_px_mm)
-        toe_info = self._analyze_toes(foot_contour, heel_point, toe_point)
+        toe_info = self._analyze_toes(foot_contour, heel_point, toe_point, ratio_px_mm)
 
         measurements.update({
             'heel_width_cm': heel_info.get('heel_width_cm'),
@@ -624,8 +624,8 @@ class MobileSAMPodiatryPipeline:
 
         return round(arc_len(left), 2), round(arc_len(right), 2)
 
-    def _analyze_toes(self, contour, heel_point, toe_point):
-        """Analyse l'orientation des orteils"""
+    def _analyze_toes(self, contour, heel_point, toe_point, ratio_px_mm=1.0):
+        """Analyse l'orientation des orteils et distances orteils/talon"""
         pts = contour[:, 0, :]
         y_min = pts[:, 1].min()
         y_max = pts[:, 1].max()
@@ -656,9 +656,14 @@ class MobileSAMPodiatryPipeline:
         hallux = angle(axis_vec, big_vec)
         opening = angle(big_vec, little_vec)
 
+        dist_big = distance.euclidean(big_toe, heel_point) / ratio_px_mm / 10
+        dist_little = distance.euclidean(little_toe, heel_point) / ratio_px_mm / 10
+
         return {
             'hallux_valgus_angle_deg': round(hallux, 1),
             'toe_opening_angle_deg': round(opening, 1),
+            'bigtoe_to_heel_cm': round(dist_big, 2),
+            'littletoe_to_heel_cm': round(dist_little, 2),
         }
     
     def _clean_mask(self, mask):
