@@ -334,3 +334,269 @@ def generate_podiatry_report(measurements, image_path):
         'shoe_width': shoe_width,
         'foot_type': foot_type
     }
+
+
+def detect_credit_card_reference(image):
+    """
+    Détecte la carte de crédit dans l'image via OpenCV (contours).
+    Retourne le rectangle détecté et le ratio pixel/mm.
+    """
+    # Prétraitement
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edged = cv2.Canny(blur, 50, 150)
+
+    # Recherche de contours
+    contours, _ = cv2.findContours(edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best_rect = None
+    best_score = 0
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < 1000:  # Trop petit
+            continue
+        approx = cv2.approxPolyDP(cnt, 0.02 * cv2.arcLength(cnt, True), True)
+        if len(approx) == 4:  # Rectangle
+            rect = cv2.boundingRect(approx)
+            w, h = rect[2], rect[3]
+            ratio = max(w, h) / min(w, h)
+            ratio_diff = abs(ratio - 1.586)
+            if ratio_diff < 0.2 and area > best_score:
+                best_score = area
+                best_rect = rect
+
+    if best_rect is not None:
+        w, h = best_rect[2], best_rect[3]
+        # Choisir l'orientation correcte
+        width_mm = 85.60
+        height_mm = 53.98
+        if w > h:
+            ratio_px_mm = w / width_mm
+        else:
+            ratio_px_mm = h / width_mm
+        return {
+            'rect': best_rect,
+            'ratio_px_mm': ratio_px_mm,
+            'success': True
+        }
+    else:
+        return {
+            'success': False,
+            'error': "Carte de crédit non détectée"
+        }
+
+def detectAndCalibrateReference(pcropedImg, contours):
+    """
+    Détecte une carte de crédit comme gabarit de référence
+    et calcule le ratio pixels/mm avec debug visuel.
+    """
+    print("🔍 Recherche de carte de crédit...")
+    best_contour = None
+    best_score = 0
+
+    for c in contours:
+        if cv2.contourArea(c) < 500:
+            continue
+        rect = cv2.minAreaRect(c)
+        (w, h) = rect[1]
+        if w == 0 or h == 0:
+            continue
+        ratio = max(w, h) / min(w, h)
+        ratio_diff = abs(ratio - 1.586)
+        if ratio_diff < 0.3:
+            score = 100 - ratio_diff * 100
+            if score > best_score:
+                best_score = score
+                best_contour = c
+
+    if best_contour is not None and best_score >= 70:
+        box = cv2.minAreaRect(best_contour)
+        box_points = cv2.boxPoints(box)
+        box_points = np.int0(box_points)
+        width_px = max(box[1])
+        height_px = min(box[1])
+        ratio_x = 85.60 / width_px
+        ratio_y = 53.98 / height_px
+
+        debug = pcropedImg.copy()
+        cv2.drawContours(debug, [box_points], 0, (0, 0, 255), 2)
+        cv2.imwrite("output/DEBUG_reference_detected.jpg", debug)
+
+        print(f"✅ Carte détectée : {width_px:.1f}px → 85.6mm")
+        return {
+            'ratio_x': ratio_x,
+            'ratio_y': ratio_y,
+            'confidence_score': best_score,
+            'reference_type': 'credit_card_detected'
+        }
+    else:
+        print("⚠️ Aucune carte fiable détectée, fallback par défaut.")
+        ph, pw = pcropedImg.shape[:2]
+        return {
+            'ratio_x': 85.60 / (pw * 0.3),
+            'ratio_y': 53.98 / (ph * 0.2),
+            'confidence_score': 30,
+            'reference_type': 'credit_card_default'
+        }
+
+
+def calcRobustFootMeasures(pcropedImg, fboundRect, fcnt, force_credit_card=True):
+    """
+    Mesure robuste avec calibration par carte de crédit détectée.
+    """
+    print("🏆 Mode calibrage : Carte de crédit réelle")
+    bound = fboundRect[2]
+    contour = fcnt[2]
+    ratio = detectAndCalibrateReference(pcropedImg, fcnt)
+    ratio_x, ratio_y = ratio['ratio_x'], ratio['ratio_y']
+
+    length = bound[3] * ratio_y / 10
+    width = bound[2] * ratio_x / 10
+    area = cv2.contourArea(contour) * ratio_x * ratio_y / 100
+
+    return {
+        'length': length,
+        'width': width,
+        'area': area,
+        'length_width_ratio': length / width if width > 0 else 0,
+        'calibration_info': ratio
+    }
+
+
+def analyzeHeelShapeRobust(foot_contour, ratio_x, ratio_y):
+    """Version robuste de l'analyse du talon"""
+    contour_points = foot_contour[:, 0, :]
+    
+    # Zone du talon (30% arrière)
+    min_y = contour_points[:, 1].min()
+    max_y = contour_points[:, 1].max()
+    heel_threshold = max_y - (max_y - min_y) * 0.3
+    
+    heel_points = contour_points[contour_points[:, 1] >= heel_threshold]
+    
+    if len(heel_points) < 5:
+        return {'heel_width_cm': 0, 'heel_shape': 'Non analysable'}
+    
+    # Largeur du talon avec calibrage précis
+    heel_width_px = heel_points[:, 0].max() - heel_points[:, 0].min()
+    heel_width_cm = (heel_width_px * ratio_x) / 10
+    
+    # Analyse de forme améliorée
+    try:
+        ellipse = cv2.fitEllipse(heel_points.reshape(-1, 1, 2))
+        (center_x, center_y), (axis1, axis2), angle = ellipse
+        ellipse_ratio = max(axis1, axis2) / min(axis1, axis2)
+        
+        if ellipse_ratio > 2.5:
+            heel_shape = "Talon étroit"
+        elif ellipse_ratio > 1.8:
+            heel_shape = "Talon normal"
+        else:
+            heel_shape = "Talon large"
+            
+        roundness = max(0, 1 - (ellipse_ratio - 1) / 2)
+        
+    except:
+        heel_shape = "Forme standard"
+        roundness = 0.5
+    
+    return {
+        'heel_width_cm': round(heel_width_cm, 1),
+        'heel_shape': heel_shape,
+        'heel_roundness': round(roundness, 2)
+    }
+
+def estimateInstepHeightRobust(foot_contour, ratio_x, ratio_y):
+    """Estimation robuste du cou-de-pied"""
+    contour_points = foot_contour[:, 0, :]
+    
+    # Analyse de courbure dans zone cou-de-pied
+    min_y = contour_points[:, 1].min()
+    max_y = contour_points[:, 1].max()
+    foot_length = max_y - min_y
+    
+    instep_start = min_y + foot_length * 0.4
+    instep_end = min_y + foot_length * 0.6
+    
+    instep_points = contour_points[
+        (contour_points[:, 1] >= instep_start) & 
+        (contour_points[:, 1] <= instep_end)
+    ]
+    
+    if len(instep_points) == 0:
+        return {
+            'instep_height_estimate_cm': 4.5,
+            'instep_category': 'Estimation standard'
+        }
+    
+    # Variation de largeur = indicateur de hauteur
+    widths = []
+    for y in range(int(instep_start), int(instep_end), 3):
+        level_points = instep_points[np.abs(instep_points[:, 1] - y) <= 1]
+        if len(level_points) >= 2:
+            width = level_points[:, 0].max() - level_points[:, 0].min()
+            widths.append(width * ratio_x / 10)  # en cm
+    
+    if len(widths) > 0:
+        width_variation = np.std(widths) / np.mean(widths)
+        height_estimate = 4.0 + (width_variation * 3)  # 4-7 cm selon variation
+        
+        if height_estimate > 6:
+            category = "Cou-de-pied haut probable"
+        elif height_estimate > 5:
+            category = "Cou-de-pied normal-haut"
+        elif height_estimate > 3.5:
+            category = "Cou-de-pied normal"
+        else:
+            category = "Cou-de-pied bas probable"
+    else:
+        height_estimate = 4.5
+        category = "Estimation standard"
+    
+    return {
+        'instep_height_estimate_cm': round(height_estimate, 1),
+        'instep_category': category
+    }
+
+def analyzeArchSupportRobust(foot_contour, ratio_x, ratio_y):
+    """Analyse robuste de la voûte plantaire"""
+    contour_points = foot_contour[:, 0, :]
+    
+    # Zone voûte (milieu du pied)
+    min_y = contour_points[:, 1].min()
+    max_y = contour_points[:, 1].max()
+    foot_length = max_y - min_y
+    
+    arch_start = min_y + foot_length * 0.3
+    arch_end = min_y + foot_length * 0.7
+    
+    arch_points = contour_points[
+        (contour_points[:, 1] >= arch_start) & 
+        (contour_points[:, 1] <= arch_end)
+    ]
+    
+    if len(arch_points) == 0:
+        return {'arch_type': 'Non déterminé'}
+    
+    # Largeur de la voûte
+    arch_width = arch_points[:, 0].max() - arch_points[:, 0].min()
+    total_width = contour_points[:, 0].max() - contour_points[:, 0].min()
+    
+    arch_ratio = arch_width / total_width if total_width > 0 else 0
+    
+    # Classification précise
+    if arch_ratio > 0.85:
+        arch_type = "Pied plat - Support voûte fort requis"
+    elif arch_ratio > 0.75:
+        arch_type = "Voûte basse - Support modéré requis"
+    elif arch_ratio > 0.60:
+        arch_type = "Voûte normale - Support léger"
+    elif arch_ratio > 0.45:
+        arch_type = "Voûte haute - Amortissement avant-pied"
+    else:
+        arch_type = "Pied creux - Amortissement généralisé"
+    
+    return {
+        'arch_type': arch_type,
+        'arch_ratio': round(arch_ratio, 2)
+    }
