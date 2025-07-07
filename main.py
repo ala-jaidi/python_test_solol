@@ -19,6 +19,8 @@ Exemples :
     )
 
     parser.add_argument('image', nargs='?', help="Image à analyser")
+    parser.add_argument('--pair', nargs=2, metavar=('GAUCHE','DROIT'),
+                        help="Mesurer pied gauche et droit")
     parser.add_argument('--debug', action='store_true', help="Sauver images debug")
     parser.add_argument('--batch', metavar='FOLDER', help="Traiter un dossier")
     parser.add_argument('--output', metavar='CSV', help="Fichier CSV pour --batch")
@@ -36,6 +38,39 @@ Exemples :
     # Cas : Batch
     if args.batch:
         batch_process_folder(args.batch, args.output)
+        return
+
+    # Cas : Paire gauche/droit
+    if args.pair:
+        left, right = args.pair
+        if not os.path.exists(left) or not os.path.exists(right):
+            print("❌ Fichiers gauche/droit introuvables")
+            return
+
+        print(f"🚀 Initialisation SAM ({args.model}) ...")
+        pipeline = MobileSAMPodiatryPipeline(model_type=args.model)
+
+        if not pipeline.initialized:
+            print("❌ SAM non initialisé. Vérifiez `pip install segment-anything` et le modèle.")
+            return
+
+        res_left = pipeline.process_foot_image(left, debug=args.debug)
+        res_right = pipeline.process_foot_image(right, debug=args.debug)
+
+        def show(title, res):
+            print(f"\n=== {title} ===")
+            if 'error' in res:
+                print(f"❌ Erreur: {res['error']}")
+                return
+            print(f"📏 Longueur: {res['length_cm']} cm")
+            print(f"📐 Largeur : {res['width_cm']} cm")
+            print(f"🔢 Ratio L/l : {res['length_width_ratio']}")
+            print(f"📊 Surface : {res['area_cm2']} cm²")
+            print(f"🔄 Périmètre : {res['perimeter_cm']} cm")
+            print(f"✨ Confiance : {res['confidence']}%")
+
+        show('Pied gauche', res_left)
+        show('Pied droit', res_right)
         return
 
     # Cas : Image unique

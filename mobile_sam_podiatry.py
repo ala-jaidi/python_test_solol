@@ -8,6 +8,13 @@ import torch
 from datetime import datetime
 from scipy.spatial import distance
 
+# Analyse avancée depuis utils
+from utils import (
+    analyzeHeelShapeRobust,
+    estimateInstepHeightRobust,
+    analyzeArchSupportRobust,
+)
+
 # SAM imports avec gestion d'erreur
 try:
     from segment_anything import sam_model_registry, SamPredictor, SamAutomaticMaskGenerator
@@ -163,11 +170,14 @@ class MobileSAMPodiatryPipeline:
         })
 
         # 7. Debug si demandé
+        debug_dir = None
         if debug:
-            self._save_debug_images(
+            debug_dir = self._save_debug_images(
                 image_rgb, foot_mask, card_mask, None,
                 image_rgb, foot_mask, measurements
             )
+            measurements['debug_dir'] = debug_dir
+            measurements['footprint_image'] = os.path.join(debug_dir, '03_foot_mask_corrected.jpg')
 
         print(f"✅ Mesures terminées: {measurements['length_cm']:.1f}cm x {measurements['width_cm']:.1f}cm")
         return measurements
@@ -456,7 +466,7 @@ class MobileSAMPodiatryPipeline:
         # Périmètre
         perimeter_px = cv2.arcLength(foot_contour, True)
         perimeter_cm = (perimeter_px / ratio_px_mm) / 10
-        
+
         measurements = {
             'length_cm': round(real_length_cm, 2),
             'width_cm': round(real_width_cm, 2),
@@ -470,7 +480,28 @@ class MobileSAMPodiatryPipeline:
             },
             'ratio_px_mm': round(ratio_px_mm, 3)
         }
-        
+
+        # Analyse complémentaire
+        ratio_mm = 1.0 / ratio_px_mm
+        heel_info = analyzeHeelShapeRobust(foot_contour, ratio_mm, ratio_mm)
+        instep_info = estimateInstepHeightRobust(foot_contour, ratio_mm, ratio_mm)
+        arch_info = analyzeArchSupportRobust(foot_contour, ratio_mm, ratio_mm)
+        left_len, right_len = self._calculate_side_lengths(foot_contour, ratio_px_mm)
+        toe_info = self._analyze_toes(foot_contour, heel_point, toe_point)
+
+        measurements.update({
+            'heel_width_cm': heel_info.get('heel_width_cm'),
+            'heel_shape': heel_info.get('heel_shape'),
+            'instep_height_cm': instep_info.get('instep_height_estimate_cm'),
+            'instep_category': instep_info.get('instep_category'),
+            'arch_type': arch_info.get('arch_type'),
+            'arch_ratio': arch_info.get('arch_ratio'),
+            'left_side_length_cm': left_len,
+            'right_side_length_cm': right_len,
+            'side_asymmetry_cm': round(abs(left_len - right_len), 2),
+        })
+        measurements.update(toe_info)
+
         return measurements
     
     def _find_real_width(self, foot_mask, contour):
@@ -501,8 +532,68 @@ class MobileSAMPodiatryPipeline:
         # Point le plus haut = orteil
         toe_idx = contour[:, :, 1].argmin()
         toe_point = contour[toe_idx, 0]
-        
+
         return heel_point, toe_point
+
+    def _calculate_side_lengths(self, contour, ratio_px_mm):
+        """Calcule la longueur des côtés gauche et droit en cm"""
+        pts = contour[:, 0, :]
+        top_idx = np.argmin(pts[:, 1])
+        bottom_idx = np.argmax(pts[:, 1])
+
+        if top_idx < bottom_idx:
+            left = pts[top_idx:bottom_idx + 1]
+            right = np.vstack([pts[bottom_idx:], pts[:top_idx + 1]])
+        else:
+            right = pts[top_idx:bottom_idx + 1]
+            left = np.vstack([pts[bottom_idx:], pts[:top_idx + 1]])
+
+        def arc_len(points):
+            length = 0.0
+            for i in range(len(points) - 1):
+                dx = points[i + 1][0] - points[i][0]
+                dy = points[i + 1][1] - points[i][1]
+                length += (dx ** 2 + dy ** 2) ** 0.5
+            return (length / ratio_px_mm) / 10
+
+        return round(arc_len(left), 2), round(arc_len(right), 2)
+
+    def _analyze_toes(self, contour, heel_point, toe_point):
+        """Analyse l'orientation des orteils"""
+        pts = contour[:, 0, :]
+        y_min = pts[:, 1].min()
+        y_max = pts[:, 1].max()
+        front_thresh = y_min + (y_max - y_min) * 0.15
+        front = pts[pts[:, 1] <= front_thresh]
+
+        if len(front) < 2:
+            return {
+                'hallux_valgus_angle_deg': 0.0,
+                'toe_opening_angle_deg': 0.0,
+            }
+
+        big_toe = front[front[:, 0].argmin()]
+        little_toe = front[front[:, 0].argmax()]
+
+        def angle(v1, v2):
+            n1 = np.linalg.norm(v1)
+            n2 = np.linalg.norm(v2)
+            if n1 == 0 or n2 == 0:
+                return 0.0
+            cos = np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0)
+            return float(np.degrees(np.arccos(cos)))
+
+        axis_vec = toe_point.astype(float) - heel_point.astype(float)
+        big_vec = big_toe.astype(float) - heel_point.astype(float)
+        little_vec = little_toe.astype(float) - heel_point.astype(float)
+
+        hallux = angle(axis_vec, big_vec)
+        opening = angle(big_vec, little_vec)
+
+        return {
+            'hallux_valgus_angle_deg': round(hallux, 1),
+            'toe_opening_angle_deg': round(opening, 1),
+        }
     
     def _clean_mask(self, mask):
         """Nettoie le masque (morphologie)"""
@@ -609,6 +700,8 @@ class MobileSAMPodiatryPipeline:
             f.write(f"\nRatio px/mm: {measurements['ratio_px_mm']}\n")
         
         print(f"📁 Debug sauvegardé dans: {debug_dir}")
+
+        return debug_dir
 
 
 # ===== FONCTIONS UTILITAIRES =====
