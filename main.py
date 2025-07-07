@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import cv2
 from pydantic import BaseModel, ValidationError, validator
 from mobile_sam_podiatry import MobileSAMPodiatryPipeline, quick_measure, batch_process_folder, validate_setup
 
@@ -19,6 +20,12 @@ class FaceImages(BaseModel):
             raise ValueError('fichier introuvable')
         if not v.lower().endswith(('.jpg', '.jpeg', '.png')):
             raise ValueError('format image non supporté')
+        img = cv2.imread(v)
+        if img is None:
+            raise ValueError('image illisible')
+        h, w = img.shape[:2]
+        if h < 100 or w < 100:
+            raise ValueError('image trop petite (min 100x100)')
         return v
 
 
