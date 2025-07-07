@@ -503,6 +503,72 @@ class MobileSAMPodiatryPipeline:
         measurements.update(toe_info)
 
         return measurements
+
+    def process_face_image(self, image_path, orientation="left", debug=False):
+        """Mesure la hauteur et la largeur d'une face du pied."""
+        print(f"\n📱 MESURE FACE {orientation.upper()}: {os.path.basename(image_path)}")
+
+        image = cv2.imread(image_path)
+        if image is None:
+            return {'error': f"Impossible de charger l'image: {image_path}"}
+
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        h, w = image.shape[:2]
+        print(f"📸 Image: {w}x{h}px")
+
+        if not self.initialized:
+            return {'error': "SAM non initialisé"}
+
+        print("🤖 Segmentation SAM en cours...")
+        masks = self.mask_generator.generate(image_rgb)
+
+        if not masks:
+            return {'error': "Aucun masque généré par SAM"}
+
+        foot_mask, card_mask, _ = self._identify_foot_and_card(masks, image_rgb)
+
+        if foot_mask is None:
+            return {'error': "Pied non détecté"}
+        if card_mask is None:
+            return {'error': "Carte non détectée"}
+
+        contours, _ = cv2.findContours(card_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return {'error': "Contour carte non trouvé"}
+        card_contour = max(contours, key=cv2.contourArea)
+        rect = cv2.minAreaRect(card_contour)
+        card_px = max(rect[1])
+        ratio_px_mm = card_px / CREDIT_CARD_WIDTH_MM
+        print(f"✅ Ratio: {ratio_px_mm:.3f} px/mm")
+
+        foot_contours, _ = cv2.findContours(foot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not foot_contours:
+            return {'error': "Contour du pied non trouvé"}
+        foot_contour = max(foot_contours, key=cv2.contourArea)
+        x, y, w_box, h_box = cv2.boundingRect(foot_contour)
+
+        width_cm = (w_box / ratio_px_mm) / 10
+        height_cm = (h_box / ratio_px_mm) / 10
+
+        measurements = {
+            'orientation': orientation,
+            'width_cm': round(width_cm, 2),
+            'height_cm': round(height_cm, 2),
+            'ratio_px_mm': round(ratio_px_mm, 3),
+            'bounding_box': {'x': x, 'y': y, 'w': w_box, 'h': h_box},
+            'image_path': image_path,
+            'original_dimensions': f"{w}x{h}",
+            'confidence': self._calculate_confidence(foot_mask, card_mask)
+        }
+
+        if debug:
+            debug_dir = self._save_debug_images(
+                image_rgb, foot_mask, card_mask, None, image_rgb, foot_mask, measurements
+            )
+            measurements['debug_dir'] = debug_dir
+
+        print(f"✅ Mesure: {measurements['height_cm']:.1f}cm x {measurements['width_cm']:.1f}cm")
+        return measurements
     
     def _find_real_width(self, foot_mask, contour):
         """Trouve la largeur réelle maximale du pied"""
