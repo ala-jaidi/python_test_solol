@@ -558,7 +558,10 @@ class MobileSAMPodiatryPipeline:
             'bounding_box': {'x': x, 'y': y, 'w': w_box, 'h': h_box},
             'image_path': image_path,
             'original_dimensions': f"{w}x{h}",
-            'confidence': self._calculate_confidence(foot_mask, card_mask)
+            'confidence': self._calculate_confidence(foot_mask, card_mask),
+            'perspective_corrected': False,
+            'card_detected': True,
+            'processing_timestamp': datetime.now().isoformat(),
         }
 
         if debug:
@@ -755,20 +758,21 @@ class MobileSAMPodiatryPipeline:
         with open(f"{debug_dir}/05_report.txt", 'w', encoding='utf-8') as f:
             f.write("RAPPORT DE MESURES PODIATRIQUES\n")
             f.write("="*50 + "\n\n")
-            f.write(f"Date: {measurements['processing_timestamp']}\n")
-            f.write(f"Image: {measurements['image_path']}\n")
-            f.write(f"Dimensions originales: {measurements['original_dimensions']}\n")
-            f.write(f"Perspective corrigée: {measurements['perspective_corrected']}\n")
-            f.write(f"Carte détectée: {measurements['card_detected']}\n")
-            f.write(f"Confiance: {measurements['confidence']}%\n\n")
-            
+            f.write(f"Date: {measurements.get('processing_timestamp', 'N/A')}\n")
+            f.write(f"Image: {measurements.get('image_path', 'N/A')}\n")
+            f.write(f"Dimensions originales: {measurements.get('original_dimensions', 'N/A')}\n")
+            f.write(f"Perspective corrigée: {measurements.get('perspective_corrected', 'N/A')}\n")
+            f.write(f"Carte détectée: {measurements.get('card_detected', 'N/A')}\n")
+            f.write(f"Confiance: {measurements.get('confidence', 'N/A')}%\n\n")
+
             f.write("MESURES DU PIED:\n")
-            f.write(f"- Longueur: {measurements['length_cm']} cm\n")
-            f.write(f"- Largeur: {measurements['width_cm']} cm\n")
-            f.write(f"- Ratio L/l: {measurements['length_width_ratio']}\n")
-            f.write(f"- Surface: {measurements['area_cm2']} cm²\n")
-            f.write(f"- Périmètre: {measurements['perimeter_cm']} cm\n")
-            f.write(f"\nRatio px/mm: {measurements['ratio_px_mm']}\n")
+            length = measurements.get('length_cm', measurements.get('height_cm', 'N/A'))
+            f.write(f"- Longueur: {length} cm\n")
+            f.write(f"- Largeur: {measurements.get('width_cm', 'N/A')} cm\n")
+            f.write(f"- Ratio L/l: {measurements.get('length_width_ratio', 'N/A')}\n")
+            f.write(f"- Surface: {measurements.get('area_cm2', 'N/A')} cm²\n")
+            f.write(f"- Périmètre: {measurements.get('perimeter_cm', 'N/A')} cm\n")
+            f.write(f"\nRatio px/mm: {measurements.get('ratio_px_mm', 'N/A')}\n")
         
         print(f"📁 Debug sauvegardé dans: {debug_dir}")
 
