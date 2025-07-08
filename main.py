@@ -2,7 +2,30 @@
 
 import argparse
 import os
-from mobile_sam_podiatry import MobileSAMPodiatryPipeline, quick_measure, batch_process_folder, validate_setup
+from dataclasses import dataclass
+from mobile_sam_podiatry import (
+    MobileSAMPodiatryPipeline,
+    quick_measure,
+    batch_process_folder,
+    validate_setup,
+)
+
+
+@dataclass
+class FaceImages:
+    """Container for foot photos used in validation tests."""
+
+    top: str
+    left: str
+    right: str
+    front: str
+    back: str
+
+    def __post_init__(self) -> None:
+        for field in ("top", "left", "right", "front", "back"):
+            path = getattr(self, field)
+            if not os.path.isfile(path):
+                raise FileNotFoundError(path)
 
 def main():
     """Interface ligne de commande pour MobileSAMPodiatryPipeline"""
