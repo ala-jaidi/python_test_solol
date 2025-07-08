@@ -8,13 +8,6 @@ import torch
 from datetime import datetime
 from scipy.spatial import distance
 
-# Analyse avancée depuis utils
-from utils import (
-    analyzeHeelShapeRobust,
-    estimateInstepHeightRobust,
-    analyzeArchSupportRobust,
-)
-
 # SAM imports avec gestion d'erreur
 try:
     from segment_anything import sam_model_registry, SamPredictor, SamAutomaticMaskGenerator
@@ -170,14 +163,11 @@ class MobileSAMPodiatryPipeline:
         })
 
         # 7. Debug si demandé
-        debug_dir = None
         if debug:
-            debug_dir = self._save_debug_images(
+            self._save_debug_images(
                 image_rgb, foot_mask, card_mask, None,
                 image_rgb, foot_mask, measurements
             )
-            measurements['debug_dir'] = debug_dir
-            measurements['footprint_image'] = os.path.join(debug_dir, '03_foot_mask_corrected.jpg')
 
         print(f"✅ Mesures terminées: {measurements['length_cm']:.1f}cm x {measurements['width_cm']:.1f}cm")
         return measurements
@@ -466,7 +456,7 @@ class MobileSAMPodiatryPipeline:
         # Périmètre
         perimeter_px = cv2.arcLength(foot_contour, True)
         perimeter_cm = (perimeter_px / ratio_px_mm) / 10
-
+        
         measurements = {
             'length_cm': round(real_length_cm, 2),
             'width_cm': round(real_width_cm, 2),
@@ -480,97 +470,7 @@ class MobileSAMPodiatryPipeline:
             },
             'ratio_px_mm': round(ratio_px_mm, 3)
         }
-
-        # Analyse complémentaire
-        ratio_mm = 1.0 / ratio_px_mm
-        heel_info = analyzeHeelShapeRobust(foot_contour, ratio_mm, ratio_mm)
-        instep_info = estimateInstepHeightRobust(foot_contour, ratio_mm, ratio_mm)
-        arch_info = analyzeArchSupportRobust(foot_contour, ratio_mm, ratio_mm)
-        left_len, right_len = self._calculate_side_lengths(foot_contour, ratio_px_mm)
-        toe_info = self._analyze_toes(foot_contour, heel_point, toe_point, ratio_px_mm)
-
-        measurements.update({
-            'heel_width_cm': heel_info.get('heel_width_cm'),
-            'heel_shape': heel_info.get('heel_shape'),
-            'instep_height_cm': instep_info.get('instep_height_estimate_cm'),
-            'instep_category': instep_info.get('instep_category'),
-            'arch_type': arch_info.get('arch_type'),
-            'arch_ratio': arch_info.get('arch_ratio'),
-            'left_side_length_cm': left_len,
-            'right_side_length_cm': right_len,
-            'side_asymmetry_cm': round(abs(left_len - right_len), 2),
-        })
-        measurements.update(toe_info)
-
-        return measurements
-
-    def process_face_image(self, image_path, orientation="left", debug=False):
-        """Mesure la hauteur et la largeur d'une face du pied."""
-        print(f"\n📱 MESURE FACE {orientation.upper()}: {os.path.basename(image_path)}")
-
-        image = cv2.imread(image_path)
-        if image is None:
-            return {'error': f"Impossible de charger l'image: {image_path}"}
-
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        h, w = image.shape[:2]
-        print(f"📸 Image: {w}x{h}px")
-
-        if not self.initialized:
-            return {'error': "SAM non initialisé"}
-
-        print("🤖 Segmentation SAM en cours...")
-        masks = self.mask_generator.generate(image_rgb)
-
-        if not masks:
-            return {'error': "Aucun masque généré par SAM"}
-
-        foot_mask, card_mask, _ = self._identify_foot_and_card(masks, image_rgb)
-
-        if foot_mask is None:
-            return {'error': "Pied non détecté"}
-        if card_mask is None:
-            return {'error': "Carte non détectée"}
-
-        contours, _ = cv2.findContours(card_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return {'error': "Contour carte non trouvé"}
-        card_contour = max(contours, key=cv2.contourArea)
-        rect = cv2.minAreaRect(card_contour)
-        card_px = max(rect[1])
-        ratio_px_mm = card_px / CREDIT_CARD_WIDTH_MM
-        print(f"✅ Ratio: {ratio_px_mm:.3f} px/mm")
-
-        foot_contours, _ = cv2.findContours(foot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not foot_contours:
-            return {'error': "Contour du pied non trouvé"}
-        foot_contour = max(foot_contours, key=cv2.contourArea)
-        x, y, w_box, h_box = cv2.boundingRect(foot_contour)
-
-        width_cm = (w_box / ratio_px_mm) / 10
-        height_cm = (h_box / ratio_px_mm) / 10
-
-        measurements = {
-            'orientation': orientation,
-            'width_cm': round(width_cm, 2),
-            'height_cm': round(height_cm, 2),
-            'ratio_px_mm': round(ratio_px_mm, 3),
-            'bounding_box': {'x': x, 'y': y, 'w': w_box, 'h': h_box},
-            'image_path': image_path,
-            'original_dimensions': f"{w}x{h}",
-            'confidence': self._calculate_confidence(foot_mask, card_mask),
-            'perspective_corrected': False,
-            'card_detected': True,
-            'processing_timestamp': datetime.now().isoformat(),
-        }
-
-        if debug:
-            debug_dir = self._save_debug_images(
-                image_rgb, foot_mask, card_mask, None, image_rgb, foot_mask, measurements
-            )
-            measurements['debug_dir'] = debug_dir
-
-        print(f"✅ Mesure: {measurements['height_cm']:.1f}cm x {measurements['width_cm']:.1f}cm")
+        
         return measurements
     
     def _find_real_width(self, foot_mask, contour):
@@ -601,73 +501,8 @@ class MobileSAMPodiatryPipeline:
         # Point le plus haut = orteil
         toe_idx = contour[:, :, 1].argmin()
         toe_point = contour[toe_idx, 0]
-
+        
         return heel_point, toe_point
-
-    def _calculate_side_lengths(self, contour, ratio_px_mm):
-        """Calcule la longueur des côtés gauche et droit en cm"""
-        pts = contour[:, 0, :]
-        top_idx = np.argmin(pts[:, 1])
-        bottom_idx = np.argmax(pts[:, 1])
-
-        if top_idx < bottom_idx:
-            left = pts[top_idx:bottom_idx + 1]
-            right = np.vstack([pts[bottom_idx:], pts[:top_idx + 1]])
-        else:
-            right = pts[top_idx:bottom_idx + 1]
-            left = np.vstack([pts[bottom_idx:], pts[:top_idx + 1]])
-
-        def arc_len(points):
-            length = 0.0
-            for i in range(len(points) - 1):
-                dx = points[i + 1][0] - points[i][0]
-                dy = points[i + 1][1] - points[i][1]
-                length += (dx ** 2 + dy ** 2) ** 0.5
-            return (length / ratio_px_mm) / 10
-
-        return round(arc_len(left), 2), round(arc_len(right), 2)
-
-    def _analyze_toes(self, contour, heel_point, toe_point, ratio_px_mm=1.0):
-        """Analyse l'orientation des orteils et distances orteils/talon"""
-        pts = contour[:, 0, :]
-        y_min = pts[:, 1].min()
-        y_max = pts[:, 1].max()
-        front_thresh = y_min + (y_max - y_min) * 0.15
-        front = pts[pts[:, 1] <= front_thresh]
-
-        if len(front) < 2:
-            return {
-                'hallux_valgus_angle_deg': 0.0,
-                'toe_opening_angle_deg': 0.0,
-            }
-
-        big_toe = front[front[:, 0].argmin()]
-        little_toe = front[front[:, 0].argmax()]
-
-        def angle(v1, v2):
-            n1 = np.linalg.norm(v1)
-            n2 = np.linalg.norm(v2)
-            if n1 == 0 or n2 == 0:
-                return 0.0
-            cos = np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0)
-            return float(np.degrees(np.arccos(cos)))
-
-        axis_vec = toe_point.astype(float) - heel_point.astype(float)
-        big_vec = big_toe.astype(float) - heel_point.astype(float)
-        little_vec = little_toe.astype(float) - heel_point.astype(float)
-
-        hallux = angle(axis_vec, big_vec)
-        opening = angle(big_vec, little_vec)
-
-        dist_big = distance.euclidean(big_toe, heel_point) / ratio_px_mm / 10
-        dist_little = distance.euclidean(little_toe, heel_point) / ratio_px_mm / 10
-
-        return {
-            'hallux_valgus_angle_deg': round(hallux, 1),
-            'toe_opening_angle_deg': round(opening, 1),
-            'bigtoe_to_heel_cm': round(dist_big, 2),
-            'littletoe_to_heel_cm': round(dist_little, 2),
-        }
     
     def _clean_mask(self, mask):
         """Nettoie le masque (morphologie)"""
@@ -758,25 +593,22 @@ class MobileSAMPodiatryPipeline:
         with open(f"{debug_dir}/05_report.txt", 'w', encoding='utf-8') as f:
             f.write("RAPPORT DE MESURES PODIATRIQUES\n")
             f.write("="*50 + "\n\n")
-            f.write(f"Date: {measurements.get('processing_timestamp', 'N/A')}\n")
-            f.write(f"Image: {measurements.get('image_path', 'N/A')}\n")
-            f.write(f"Dimensions originales: {measurements.get('original_dimensions', 'N/A')}\n")
-            f.write(f"Perspective corrigée: {measurements.get('perspective_corrected', 'N/A')}\n")
-            f.write(f"Carte détectée: {measurements.get('card_detected', 'N/A')}\n")
-            f.write(f"Confiance: {measurements.get('confidence', 'N/A')}%\n\n")
-
+            f.write(f"Date: {measurements['processing_timestamp']}\n")
+            f.write(f"Image: {measurements['image_path']}\n")
+            f.write(f"Dimensions originales: {measurements['original_dimensions']}\n")
+            f.write(f"Perspective corrigée: {measurements['perspective_corrected']}\n")
+            f.write(f"Carte détectée: {measurements['card_detected']}\n")
+            f.write(f"Confiance: {measurements['confidence']}%\n\n")
+            
             f.write("MESURES DU PIED:\n")
-            length = measurements.get('length_cm', measurements.get('height_cm', 'N/A'))
-            f.write(f"- Longueur: {length} cm\n")
-            f.write(f"- Largeur: {measurements.get('width_cm', 'N/A')} cm\n")
-            f.write(f"- Ratio L/l: {measurements.get('length_width_ratio', 'N/A')}\n")
-            f.write(f"- Surface: {measurements.get('area_cm2', 'N/A')} cm²\n")
-            f.write(f"- Périmètre: {measurements.get('perimeter_cm', 'N/A')} cm\n")
-            f.write(f"\nRatio px/mm: {measurements.get('ratio_px_mm', 'N/A')}\n")
+            f.write(f"- Longueur: {measurements['length_cm']} cm\n")
+            f.write(f"- Largeur: {measurements['width_cm']} cm\n")
+            f.write(f"- Ratio L/l: {measurements['length_width_ratio']}\n")
+            f.write(f"- Surface: {measurements['area_cm2']} cm²\n")
+            f.write(f"- Périmètre: {measurements['perimeter_cm']} cm\n")
+            f.write(f"\nRatio px/mm: {measurements['ratio_px_mm']}\n")
         
         print(f"📁 Debug sauvegardé dans: {debug_dir}")
-
-        return debug_dir
 
 
 # ===== FONCTIONS UTILITAIRES =====
