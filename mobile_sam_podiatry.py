@@ -501,8 +501,28 @@ class MobileSAMPodiatryPipeline:
         # Point le plus haut = orteil
         toe_idx = contour[:, :, 1].argmin()
         toe_point = contour[toe_idx, 0]
-        
+
         return heel_point, toe_point
+
+    def _analyze_toes(self, contour, heel_point, toe_point, ratio_px_mm=1.0):
+        """Return basic toe metrics used in tests."""
+        pts = contour[:, 0, :]
+        min_y = pts[:, 1].min()
+        toe_candidates = pts[pts[:, 1] == min_y]
+        if len(toe_candidates) >= 2:
+            big_toe = toe_candidates[toe_candidates[:, 0].argmin()]
+            little_toe = toe_candidates[toe_candidates[:, 0].argmax()]
+        else:
+            big_toe = toe_point
+            little_toe = toe_point
+
+        def dist(a, b):
+            return distance.euclidean(a, b) / ratio_px_mm / 10
+
+        return {
+            "bigtoe_to_heel_cm": round(dist(big_toe, heel_point), 2),
+            "littletoe_to_heel_cm": round(dist(little_toe, heel_point), 2),
+        }
     
     def _clean_mask(self, mask):
         """Nettoie le masque (morphologie)"""
