@@ -3,7 +3,7 @@
 
 ## How to Evaluate?
 * Clone the repo
-* Install required packages: `pip install opencv-python scikit-learn scikit-image matplotlib imutils pydantic`
+* Install required packages: `pip install opencv-python scikit-learn scikit-image matplotlib imutils`
 * Put any image in the "data" folder
 * Run: `python main.py your_image.jpg` or just `python main.py` to see available images
 
@@ -11,14 +11,6 @@
 ```bash
 # Test with specific image
 python main.py my_foot_photo.jpg
-
-# Measure all faces of the foot
-python main.py \
-  --top top.jpg \
-  --left left.jpg \
-  --right right.jpg \
-  --front front.jpg \
-  --back back.jpg
 
 # See all available images and use default
 python main.py
