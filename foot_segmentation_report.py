@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Optional
+from typing import Dict, Optional
 
 import cv2
 import numpy as np
@@ -155,6 +155,22 @@ def measure_back_view(image: np.ndarray, mask: np.ndarray, px_to_cm: float) -> d
     return {"heel_width_cm": round(width * px_to_cm, 2)}
 
 
+def measure_front_view(image: np.ndarray, mask: np.ndarray, px_to_cm: float) -> dict:
+    """Estimate toe span from a front view."""
+    contour = _largest_contour(mask)
+    if contour is None:
+        return {}
+    x, y, w, h = cv2.boundingRect(contour)
+    pts = contour[:, 0, :]
+    band_y = y + int(h * 0.2)
+    region = pts[pts[:, 1] <= band_y]
+    if len(region) == 0:
+        width = 0
+    else:
+        width = region[:, 0].max() - region[:, 0].min()
+    return {"toe_span_cm": round(width * px_to_cm, 2)}
+
+
 # -------------------- Utility --------------------
 
 def pixel_to_cm_scale(image: np.ndarray) -> float:
@@ -166,38 +182,69 @@ def pixel_to_cm_scale(image: np.ndarray) -> float:
     return 1.0
 
 
-def main(top, bottom, side, back, checkpoint="sam_vit_b_01ec64.pth"):
+def generate_report(top: str,
+                    left: Optional[str] = None,
+                    right: Optional[str] = None,
+                    front: Optional[str] = None,
+                    back: Optional[str] = None,
+                    checkpoint: str = "sam_vit_b_01ec64.pth") -> Dict[str, Dict]:
+    """Generate a foot report from multiple view images."""
+
     generator = initialize_sam(checkpoint=checkpoint)
-    images = {"top": cv2.imread(top), "bottom": cv2.imread(bottom), "side": cv2.imread(side), "back": cv2.imread(back)}
+
+    paths = {"top": top}
+    if left:
+        paths["left"] = left
+    if right:
+        paths["right"] = right
+    if front:
+        paths["front"] = front
+    if back:
+        paths["back"] = back
+
+    images = {k: cv2.imread(v) for k, v in paths.items()}
     if any(v is None for v in images.values()):
         raise FileNotFoundError("One or more images could not be loaded")
 
     scale = pixel_to_cm_scale(images["top"])
 
-    results = {}
+    results: Dict[str, Dict] = {}
     masks = {}
     for key, img in images.items():
         masks[key] = segment_image(img, generator)
 
-    results.update(measure_top_view(images["top"], masks["top"], scale))
-    results.update(measure_bottom_view(images["bottom"], masks["bottom"], scale))
-    results.update(measure_side_view(images["side"], masks["side"], scale))
-    results.update(measure_back_view(images["back"], masks["back"], scale))
+    results["top"] = measure_top_view(images["top"], masks["top"], scale)
+    if "left" in images:
+        results["left"] = measure_side_view(images["left"], masks["left"], scale)
+    if "right" in images:
+        results["right"] = measure_side_view(images["right"], masks["right"], scale)
+    if "front" in images:
+        results["front"] = measure_front_view(images["front"], masks["front"], scale)
+    if "back" in images:
+        results["back"] = measure_back_view(images["back"], masks["back"], scale)
 
     with open("foot_report.json", "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
     print("Saved report to foot_report.json")
 
+    return results
 
-if __name__ == "__main__":
+
+def main():
+    """Command-line interface for generating a foot report."""
     import argparse
 
     parser = argparse.ArgumentParser(description="Foot report using SAM")
     parser.add_argument("top")
-    parser.add_argument("bottom")
-    parser.add_argument("side")
-    parser.add_argument("back")
+    parser.add_argument("--left")
+    parser.add_argument("--right")
+    parser.add_argument("--front")
+    parser.add_argument("--back")
     parser.add_argument("--checkpoint", default="sam_vit_b_01ec64.pth")
     args = parser.parse_args()
 
-    main(args.top, args.bottom, args.side, args.back, args.checkpoint)
+    generate_report(args.top, args.left, args.right, args.front, args.back, args.checkpoint)
+
+
+if __name__ == "__main__":
+    main()
