@@ -7,6 +7,7 @@ import os
 import torch
 from datetime import datetime
 from scipy.spatial import distance
+import utils
 
 # SAM imports avec gestion d'erreur
 try:
@@ -456,7 +457,7 @@ class MobileSAMPodiatryPipeline:
         # Périmètre
         perimeter_px = cv2.arcLength(foot_contour, True)
         perimeter_cm = (perimeter_px / ratio_px_mm) / 10
-        
+
         measurements = {
             'length_cm': round(real_length_cm, 2),
             'width_cm': round(real_width_cm, 2),
@@ -470,7 +471,12 @@ class MobileSAMPodiatryPipeline:
             },
             'ratio_px_mm': round(ratio_px_mm, 3)
         }
-        
+
+        # Analyse supplémentaire
+        measurements.update(self._analyze_toes(foot_contour, heel_point, toe_point, ratio_px_mm))
+        measurements.update(utils.estimateInstepHeightRobust(foot_contour, ratio_px_mm, ratio_px_mm))
+        measurements.update(utils.analyzeArchSupportRobust(foot_contour, ratio_px_mm, ratio_px_mm))
+
         return measurements
     
     def _find_real_width(self, foot_mask, contour):
@@ -501,8 +507,29 @@ class MobileSAMPodiatryPipeline:
         # Point le plus haut = orteil
         toe_idx = contour[:, :, 1].argmin()
         toe_point = contour[toe_idx, 0]
-        
+
         return heel_point, toe_point
+
+    def _analyze_toes(self, contour, heel_point, toe_point, ratio_px_mm):
+        """Estimate distances from heel to big and little toes."""
+        pts = contour[:, 0, :]
+        toe_y = pts[:, 1].min()
+        region = pts[pts[:, 1] <= toe_y + 5]
+        if len(region) == 0:
+            region = pts[pts[:, 1] <= toe_y + 10]
+        if len(region) == 0:
+            return {
+                "bigtoe_to_heel_cm": 0.0,
+                "littletoe_to_heel_cm": 0.0,
+            }
+        bigtoe = region[region[:, 0].argmax()]
+        littletoe = region[region[:, 0].argmin()]
+        big_d = distance.euclidean(bigtoe, heel_point)
+        little_d = distance.euclidean(littletoe, heel_point)
+        return {
+            "bigtoe_to_heel_cm": round((big_d / ratio_px_mm) / 10, 2),
+            "littletoe_to_heel_cm": round((little_d / ratio_px_mm) / 10, 2),
+        }
     
     def _clean_mask(self, mask):
         """Nettoie le masque (morphologie)"""
@@ -710,6 +737,45 @@ def batch_process_folder(folder_path, output_csv=None):
         print(f"Longueur moyenne: {df['length_cm'].mean():.1f} cm")
         print(f"Largeur moyenne: {df['width_cm'].mean():.1f} cm")
         print(f"Confiance moyenne: {df['confidence'].mean():.0f}%")
+
+
+def process_multiview(images, debug=False):
+    """Process multiple views of the same foot and combine metrics.
+
+    Args:
+        images (FaceImages): container with image paths
+        debug (bool): save debug images for each view
+    """
+    pipeline = MobileSAMPodiatryPipeline()
+
+    if not pipeline.initialized:
+        return {'error': 'Pipeline non initialisé - SAM requis'}
+
+    view_results = {}
+    for view in ['top', 'left', 'right', 'front', 'back']:
+        path = getattr(images, view)
+        if not os.path.exists(path):
+            view_results[view] = {'error': 'Fichier manquant'}
+            continue
+        view_results[view] = pipeline.process_foot_image(path, debug=debug)
+
+    lengths = [r['length_cm'] for r in view_results.values() if 'length_cm' in r]
+    widths = [r['width_cm'] for r in view_results.values() if 'width_cm' in r]
+    insteps = [r['instep_height_estimate_cm'] for r in view_results.values() if 'instep_height_estimate_cm' in r]
+    archs = [r['arch_type'] for r in view_results.values() if 'arch_type' in r]
+
+    combined = {}
+    if lengths:
+        combined['length_cm'] = round(float(np.mean(lengths)), 2)
+    if widths:
+        combined['width_cm'] = round(float(np.mean(widths)), 2)
+    if insteps:
+        combined['instep_height_cm'] = round(float(np.mean(insteps)), 2)
+    if archs:
+        combined['arch_type'] = max(set(archs), key=archs.count)
+
+    combined['views'] = view_results
+    return combined
 
 
 def validate_setup():
