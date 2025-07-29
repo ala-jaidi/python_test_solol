@@ -2,31 +2,7 @@
 
 import argparse
 import os
-from dataclasses import dataclass
-from mobile_sam_podiatry import (
-    MobileSAMPodiatryPipeline,
-    quick_measure,
-    batch_process_folder,
-    validate_setup,
-    process_multiview,
-)
-
-
-@dataclass
-class FaceImages:
-    """Container for multiple view images of the same foot."""
-
-    top: str
-    left: str
-    right: str
-    front: str
-    back: str
-
-    def __post_init__(self):
-        for field in ("top", "left", "right", "front", "back"):
-            path = getattr(self, field)
-            if not isinstance(path, str) or not os.path.exists(path):
-                raise ValueError(f"{field} image path invalid: {path}")
+from mobile_sam_podiatry import MobileSAMPodiatryPipeline, quick_measure, batch_process_folder, validate_setup
 
 def main():
     """Interface ligne de commande pour MobileSAMPodiatryPipeline"""
@@ -43,8 +19,6 @@ Exemples :
     )
 
     parser.add_argument('image', nargs='?', help="Image à analyser")
-    parser.add_argument('--multiview', nargs=5, metavar=('TOP','LEFT','RIGHT','FRONT','BACK'),
-                        help="Images multi-vues pour agrégation")
     parser.add_argument('--debug', action='store_true', help="Sauver images debug")
     parser.add_argument('--batch', metavar='FOLDER', help="Traiter un dossier")
     parser.add_argument('--output', metavar='CSV', help="Fichier CSV pour --batch")
@@ -62,24 +36,6 @@ Exemples :
     # Cas : Batch
     if args.batch:
         batch_process_folder(args.batch, args.output)
-        return
-
-    # Cas : Multiview
-    if args.multiview:
-        images = FaceImages(*args.multiview)
-        result = process_multiview(images)
-        if 'error' in result:
-            print(f"❌ Erreur: {result['error']}")
-        else:
-            print("\n✅ RÉSULTATS MULTI-VUES :")
-            if 'length_cm' in result:
-                print(f"📏 Longueur moyenne : {result['length_cm']} cm")
-            if 'width_cm' in result:
-                print(f"📐 Largeur moyenne : {result['width_cm']} cm")
-            if 'instep_height_cm' in result:
-                print(f"📈 Cou-de-pied : {result['instep_height_cm']} cm")
-            if 'arch_type' in result:
-                print(f"🏷️  Voûte : {result['arch_type']}")
         return
 
     # Cas : Image unique
