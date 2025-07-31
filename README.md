@@ -23,6 +23,19 @@ python main.py
 # - Warning if measurement seems incorrect
 ```
 
+### Hybrid two-photo pipeline
+The updated pipeline can combine a top view of the foot with a side view. The top
+view is used to measure width and evaluate the plantar arch, while the side view
+provides the length, arch height and arch angle. Example usage:
+
+```python
+from mobile_sam_podiatry import MobileSAMPodiatryPipeline
+
+pipeline = MobileSAMPodiatryPipeline()
+result = pipeline.process_hybrid_views('top.jpg', 'side.jpg')
+print(result)
+```
+
 ## Working Aproach
 * convert raw image to HSV format
 * Remove noise using Gaussian Blur

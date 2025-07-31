@@ -526,7 +526,7 @@ class MobileSAMPodiatryPipeline:
     def _calculate_confidence(self, foot_mask, card_mask):
         """Calcule un score de confiance global"""
         confidence = 50  # Base
-        
+
         if foot_mask is not None:
             confidence += 25
         
@@ -534,6 +534,191 @@ class MobileSAMPodiatryPipeline:
             confidence += 25
         
         return min(confidence, 100)
+
+    # ------------------------------------------------------------------
+    # Nouveaux outils pour vues multiples (profil et dessus)
+    # ------------------------------------------------------------------
+
+    def _measure_side_view(self, image, foot_mask, ratio_px_mm):
+        """Analyse la vue de profil pour la longueur et la voûte"""
+        contours, _ = cv2.findContours(foot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return {'error': 'Contour du pied non trouvé'}
+
+        contour = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(contour)
+        ground_y = y + h
+
+        pts = contour[:, 0, :]
+        ground_pts = pts[np.abs(pts[:, 1] - ground_y) <= 5]
+        if len(ground_pts) > 0:
+            heel = ground_pts[ground_pts[:, 0].argmin()]
+            forefoot = ground_pts[ground_pts[:, 0].argmax()]
+        else:
+            heel = pts[pts[:, 0].argmin()]
+            forefoot = pts[pts[:, 0].argmax()]
+
+        span = forefoot[0] - heel[0]
+        mid_start = heel[0] + int(span * 0.3)
+        mid_end = heel[0] + int(span * 0.7)
+        mid_pts = pts[(pts[:, 0] >= mid_start) & (pts[:, 0] <= mid_end)]
+        if len(mid_pts) > 0:
+            arch = mid_pts[mid_pts[:, 1].argmin()]
+        else:
+            arch = pts[pts[:, 1].argmin()]
+
+        arch_height_px = ground_y - arch[1]
+        arch_height_cm = (arch_height_px / ratio_px_mm) / 10
+        length_px = forefoot[0] - heel[0]
+        length_cm = (length_px / ratio_px_mm) / 10
+        angle_rad = np.arctan2(ground_y - arch[1], arch[0] - heel[0])
+        angle_deg = np.degrees(angle_rad)
+
+        return {
+            'length_cm': round(length_cm, 2),
+            'arch_height_cm': round(arch_height_cm, 2),
+            'arch_angle_deg': round(angle_deg, 2),
+            'heel_point': heel.tolist(),
+            'arch_point': arch.tolist(),
+            'forefoot_point': forefoot.tolist(),
+            'ratio_px_mm': round(ratio_px_mm, 3)
+        }
+
+    def _toe_angle_opening(self, contour, ratio_px_mm):
+        """Calcule l'angle d'ouverture des orteils"""
+        heel, toe = self._find_heel_and_toe(contour)
+        pts = contour[:, 0, :]
+        toe_region = pts[pts[:, 1] <= toe[1] + 10]
+        if len(toe_region) > 0:
+            left_toe = toe_region[toe_region[:, 0].argmin()]
+            right_toe = toe_region[toe_region[:, 0].argmax()]
+        else:
+            left_toe = right_toe = toe
+
+        opening_px = np.linalg.norm(right_toe - left_toe)
+        opening_cm = (opening_px / ratio_px_mm) / 10
+        axis_angle = np.degrees(np.arctan2(toe[1] - heel[1], toe[0] - heel[0]))
+        toe_line_angle = np.degrees(np.arctan2(right_toe[1] - left_toe[1], right_toe[0] - left_toe[0]))
+        angle = abs(toe_line_angle - axis_angle)
+
+        return angle, opening_cm
+
+    def _measure_top_view(self, image, foot_mask, ratio_px_mm):
+        """Analyse de la vue du dessus pour largeur et voûte"""
+        contours, _ = cv2.findContours(foot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return {'error': 'Contour du pied non trouvé'}
+
+        contour = max(contours, key=cv2.contourArea)
+
+        measures = self._measure_foot(image, foot_mask, ratio_px_mm)
+        if 'error' in measures:
+            return measures
+
+        from utils import analyzeArchSupportRobust
+
+        arch_info = analyzeArchSupportRobust(contour, ratio_px_mm, ratio_px_mm)
+        toe_angle, opening_cm = self._toe_angle_opening(contour, ratio_px_mm)
+
+        measures.update({
+            'arch_type': arch_info.get('arch_type', 'N/A'),
+            'arch_ratio': arch_info.get('arch_ratio'),
+            'toe_angle_deg': round(toe_angle, 2),
+            'toe_opening_cm': round(opening_cm, 2)
+        })
+
+        return measures
+
+    def process_top_view_image(self, image_path, debug=False):
+        """Traite une vue du dessus/empreinte"""
+        image = cv2.imread(image_path)
+        if image is None:
+            return {'error': f"Impossible de charger l'image: {image_path}"}
+
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        if not self.initialized:
+            return {'error': 'SAM non initialisé'}
+
+        masks = self.mask_generator.generate(image_rgb)
+        if not masks:
+            return {'error': 'Aucun masque généré par SAM'}
+
+        foot_mask, card_mask, _ = self._identify_foot_and_card(masks, image_rgb)
+        if foot_mask is None:
+            return {'error': 'Pied non détecté'}
+        if card_mask is None:
+            return {'error': 'Carte non détectée'}
+
+        contours, _ = cv2.findContours(card_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        card_contour = max(contours, key=cv2.contourArea)
+        rect = cv2.minAreaRect(card_contour)
+        card_px = max(rect[1])
+        ratio_px_mm = card_px / CREDIT_CARD_WIDTH_MM
+
+        measures = self._measure_top_view(image_rgb, foot_mask, ratio_px_mm)
+        if debug:
+            self._save_debug_images(image_rgb, foot_mask, card_mask, None, image_rgb, foot_mask, measures)
+
+        return measures
+
+    def process_side_view_image(self, image_path, debug=False):
+        """Traite la vue de profil du pied"""
+        image = cv2.imread(image_path)
+        if image is None:
+            return {'error': f"Impossible de charger l'image: {image_path}"}
+
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        if not self.initialized:
+            return {'error': 'SAM non initialisé'}
+
+        masks = self.mask_generator.generate(image_rgb)
+        if not masks:
+            return {'error': 'Aucun masque généré par SAM'}
+
+        foot_mask, card_mask, _ = self._identify_foot_and_card(masks, image_rgb)
+        if foot_mask is None:
+            return {'error': 'Pied non détecté'}
+        if card_mask is None:
+            return {'error': 'Carte non détectée'}
+
+        contours, _ = cv2.findContours(card_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        card_contour = max(contours, key=cv2.contourArea)
+        rect = cv2.minAreaRect(card_contour)
+        card_px = max(rect[1])
+        ratio_px_mm = card_px / CREDIT_CARD_WIDTH_MM
+
+        measures = self._measure_side_view(image_rgb, foot_mask, ratio_px_mm)
+
+        if debug:
+            self._save_debug_images(image_rgb, foot_mask, card_mask, None, image_rgb, foot_mask, measures)
+
+        return measures
+
+    def process_hybrid_views(self, top_image_path, side_image_path, debug=False):
+        """Combine une vue du dessus et une vue de profil"""
+        top = self.process_top_view_image(top_image_path, debug)
+        if 'error' in top:
+            return {'error': f"Top view: {top['error']}"}
+
+        side = self.process_side_view_image(side_image_path, debug)
+        if 'error' in side:
+            return {'error': f"Side view: {side['error']}"}
+
+        result = {
+            'length_cm': side['length_cm'],
+            'width_cm': top['width_cm'],
+            'arch_height_cm': side['arch_height_cm'],
+            'arch_angle_deg': side['arch_angle_deg'],
+            'arch_type': top.get('arch_type'),
+            'toe_angle_deg': top.get('toe_angle_deg'),
+            'toe_opening_cm': top.get('toe_opening_cm'),
+            'ratio_px_mm': side['ratio_px_mm'],
+            'confidence': (side.get('confidence', 50) + top.get('confidence', 50)) / 2
+        }
+
+        return result
     
     def _save_debug_images(self, original, foot_mask, card_mask, card_corners,
                           warped, warped_foot_mask, measurements):
