@@ -83,7 +83,7 @@ Exemples :
             print("❌ SAM non initialisé. Vérifiez `pip install segment-anything` et le modèle.")
             return
 
-        result = pipeline.process_foot_image(args.image, debug=True)
+        result = pipeline.process_foot_image(args.image, debug=args.debug)
 
         if 'error' in result:
             print(f"❌ Erreur: {result['error']}")
