@@ -475,22 +475,39 @@ class MobileSAMPodiatryPipeline:
     
     def _find_real_width(self, foot_mask, contour):
         """Trouve la largeur réelle maximale du pied"""
-        # Créer un masque vide
         h, w = foot_mask.shape
         mask = np.zeros((h, w), dtype=np.uint8)
         cv2.drawContours(mask, [contour], -1, 255, -1)
-        
-        # Scanner horizontalement pour trouver la largeur max
+
         max_width = 0
-        
         for y in range(h):
             row = mask[y, :]
             if np.any(row):
                 indices = np.where(row)[0]
                 width = indices[-1] - indices[0]
                 max_width = max(max_width, width)
-        
+
         return max_width
+
+    def _find_max_width_points(self, foot_mask, contour):
+        """Retourne la largeur maximale et les points gauche/droit correspondants"""
+        h, w = foot_mask.shape
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(mask, [contour], -1, 255, -1)
+
+        max_width = 0
+        left_pt = (0, 0)
+        right_pt = (0, 0)
+        for y in range(h):
+            indices = np.where(mask[y, :] > 0)[0]
+            if len(indices) > 0:
+                width = indices[-1] - indices[0]
+                if width > max_width:
+                    max_width = width
+                    left_pt = (int(indices[0]), int(y))
+                    right_pt = (int(indices[-1]), int(y))
+
+        return max_width, left_pt, right_pt
     
     def _find_heel_and_toe(self, contour):
         """Trouve les points talon et orteil"""
@@ -581,6 +598,7 @@ class MobileSAMPodiatryPipeline:
             'heel_point': heel.tolist(),
             'arch_point': arch.tolist(),
             'forefoot_point': forefoot.tolist(),
+            'ground_y': int(ground_y),
             'ratio_px_mm': round(ratio_px_mm, 3)
         }
 
@@ -604,30 +622,21 @@ class MobileSAMPodiatryPipeline:
         return angle, opening_cm
 
     def _measure_top_view(self, image, foot_mask, ratio_px_mm):
-        """Analyse de la vue du dessus pour largeur et voûte"""
+        """Analyse de la vue du dessus pour obtenir uniquement la largeur"""
         contours, _ = cv2.findContours(foot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return {'error': 'Contour du pied non trouvé'}
 
         contour = max(contours, key=cv2.contourArea)
+        width_px, left_pt, right_pt = self._find_max_width_points(foot_mask, contour)
+        width_cm = (width_px / ratio_px_mm) / 10
 
-        measures = self._measure_foot(image, foot_mask, ratio_px_mm)
-        if 'error' in measures:
-            return measures
-
-        from utils import analyzeArchSupportRobust
-
-        arch_info = analyzeArchSupportRobust(contour, ratio_px_mm, ratio_px_mm)
-        toe_angle, opening_cm = self._toe_angle_opening(contour, ratio_px_mm)
-
-        measures.update({
-            'arch_type': arch_info.get('arch_type', 'N/A'),
-            'arch_ratio': arch_info.get('arch_ratio'),
-            'toe_angle_deg': round(toe_angle, 2),
-            'toe_opening_cm': round(opening_cm, 2)
-        })
-
-        return measures
+        return {
+            'width_cm': round(width_cm, 2),
+            'left_point': list(left_pt),
+            'right_point': list(right_pt),
+            'ratio_px_mm': round(ratio_px_mm, 3)
+        }
 
     def process_top_view_image(self, image_path, debug=False):
         """Traite une vue du dessus/empreinte"""
@@ -657,8 +666,13 @@ class MobileSAMPodiatryPipeline:
         ratio_px_mm = card_px / CREDIT_CARD_WIDTH_MM
 
         measures = self._measure_top_view(image_rgb, foot_mask, ratio_px_mm)
+        measures.update({
+            'image_path': image_path,
+            'confidence': self._calculate_confidence(foot_mask, card_mask)
+        })
+
         if debug:
-            self._save_debug_images(image_rgb, foot_mask, card_mask, None, image_rgb, foot_mask, measures)
+            self._save_top_view_debug(image_rgb, foot_mask, card_mask, measures)
 
         return measures
 
@@ -690,9 +704,13 @@ class MobileSAMPodiatryPipeline:
         ratio_px_mm = card_px / CREDIT_CARD_WIDTH_MM
 
         measures = self._measure_side_view(image_rgb, foot_mask, ratio_px_mm)
+        measures.update({
+            'image_path': image_path,
+            'confidence': self._calculate_confidence(foot_mask, card_mask)
+        })
 
         if debug:
-            self._save_debug_images(image_rgb, foot_mask, card_mask, None, image_rgb, foot_mask, measures)
+            self._save_side_view_debug(image_rgb, foot_mask, card_mask, measures)
 
         return measures
 
@@ -707,18 +725,68 @@ class MobileSAMPodiatryPipeline:
             return {'error': f"Side view: {side['error']}"}
 
         result = {
-            'length_cm': side['length_cm'],
             'width_cm': top['width_cm'],
+            'length_cm': side['length_cm'],
             'arch_height_cm': side['arch_height_cm'],
             'arch_angle_deg': side['arch_angle_deg'],
-            'arch_type': top.get('arch_type'),
-            'toe_angle_deg': top.get('toe_angle_deg'),
-            'toe_opening_cm': top.get('toe_opening_cm'),
-            'ratio_px_mm': side['ratio_px_mm'],
             'confidence': (side.get('confidence', 50) + top.get('confidence', 50)) / 2
         }
 
         return result
+
+    def _save_top_view_debug(self, image, foot_mask, card_mask, measures):
+        """Enregistre le debug pour la vue du dessus"""
+        debug_dir = f"output/debug_top_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        os.makedirs(debug_dir, exist_ok=True)
+        vis = image.copy()
+
+        if foot_mask is not None:
+            overlay = np.zeros_like(vis)
+            overlay[foot_mask > 0] = [0, 255, 0]
+            vis = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+
+        if card_mask is not None:
+            overlay = np.zeros_like(vis)
+            overlay[card_mask > 0] = [255, 0, 0]
+            vis = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+
+        left = tuple(measures['left_point'])
+        right = tuple(measures['right_point'])
+        cv2.line(vis, left, right, (0, 255, 255), 2)
+        cv2.circle(vis, left, 8, (255, 0, 0), -1)
+        cv2.circle(vis, right, 8, (0, 0, 255), -1)
+
+        cv2.imwrite(f"{debug_dir}/top_view.jpg", cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
+
+    def _save_side_view_debug(self, image, foot_mask, card_mask, measures):
+        """Enregistre le debug pour la vue de profil"""
+        debug_dir = f"output/debug_side_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        os.makedirs(debug_dir, exist_ok=True)
+        vis = image.copy()
+
+        if foot_mask is not None:
+            overlay = np.zeros_like(vis)
+            overlay[foot_mask > 0] = [0, 255, 0]
+            vis = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+
+        if card_mask is not None:
+            overlay = np.zeros_like(vis)
+            overlay[card_mask > 0] = [255, 0, 0]
+            vis = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+
+        heel = tuple(measures['heel_point'])
+        arch = tuple(measures['arch_point'])
+        fore = tuple(measures['forefoot_point'])
+        ground_y = int(measures['ground_y'])
+
+        cv2.line(vis, (0, ground_y), (vis.shape[1], ground_y), (0, 255, 255), 2)
+        cv2.circle(vis, heel, 8, (255, 0, 0), -1)
+        cv2.circle(vis, arch, 8, (0, 255, 0), -1)
+        cv2.circle(vis, fore, 8, (0, 0, 255), -1)
+        cv2.line(vis, heel, fore, (255, 255, 0), 2)
+        cv2.line(vis, heel, arch, (255, 255, 0), 2)
+
+        cv2.imwrite(f"{debug_dir}/side_view.jpg", cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
     
     def _save_debug_images(self, original, foot_mask, card_mask, card_corners,
                           warped, warped_foot_mask, measurements):
