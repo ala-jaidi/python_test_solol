@@ -557,44 +557,47 @@ class MobileSAMPodiatryPipeline:
     # ------------------------------------------------------------------
 
     def _measure_side_view(self, image, foot_mask, ratio_px_mm):
-        """Analyse la vue de profil pour la longueur et la voûte"""
+        """Analyse la vue de profil pour la longueur, hauteur de voûte et angle"""
         contours, _ = cv2.findContours(foot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return {'error': 'Contour du pied non trouvé'}
 
         contour = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(contour)
-        ground_y = y + h
-
         pts = contour[:, 0, :]
-        ground_pts = pts[np.abs(pts[:, 1] - ground_y) <= 5]
-        if len(ground_pts) > 0:
-            heel = ground_pts[ground_pts[:, 0].argmin()]
-            forefoot = ground_pts[ground_pts[:, 0].argmax()]
-        else:
-            heel = pts[pts[:, 0].argmin()]
-            forefoot = pts[pts[:, 0].argmax()]
 
-        span = forefoot[0] - heel[0]
-        mid_start = heel[0] + int(span * 0.3)
-        mid_end = heel[0] + int(span * 0.7)
-        mid_pts = pts[(pts[:, 0] >= mid_start) & (pts[:, 0] <= mid_end)]
+        # Ligne du sol plus stable
+        bottom_points = pts[pts[:, 1] >= pts[:, 1].max() - 5]
+        ground_y = int(np.median(bottom_points[:, 1]))
+
+        # Talon et avant-pied = extrêmes horizontaux
+        heel = pts[pts[:, 0].argmin()]
+        forefoot = pts[pts[:, 0].argmax()]
+
+        # Arche = point le plus haut au centre du pied
+        span_min, span_max = min(heel[0], forefoot[0]), max(heel[0], forefoot[0])
+        mid_pts = pts[(pts[:, 0] >= span_min + (span_max - span_min) * 0.2) &
+                     (pts[:, 0] <= span_max - (span_max - span_min) * 0.2)]
         if len(mid_pts) > 0:
-            arch = mid_pts[mid_pts[:, 1].argmin()]
+            # Ignorer les points trop hauts (cheville)
+            y_threshold = ground_y - 0.6 * (ground_y - pts[:, 1].min())  # max 60% de la hauteur
+            filtered = mid_pts[mid_pts[:, 1] > y_threshold]
+
+            if len(filtered) > 0:
+                arch = filtered[filtered[:, 1].argmin()]
+            else:
+                arch = mid_pts[mid_pts[:, 1].argmin()]
         else:
             arch = pts[pts[:, 1].argmin()]
 
+        # Mesures
+        length_px = np.linalg.norm(forefoot - heel)
         arch_height_px = ground_y - arch[1]
-        arch_height_cm = (arch_height_px / ratio_px_mm) / 10
-        length_px = forefoot[0] - heel[0]
-        length_cm = (length_px / ratio_px_mm) / 10
         angle_rad = np.arctan2(ground_y - arch[1], arch[0] - heel[0])
-        angle_deg = np.degrees(angle_rad)
 
         return {
-            'length_cm': round(length_cm, 2),
-            'arch_height_cm': round(arch_height_cm, 2),
-            'arch_angle_deg': round(angle_deg, 2),
+            'length_cm': round((length_px / ratio_px_mm) / 10, 2),
+            'arch_height_cm': round((arch_height_px / ratio_px_mm) / 10, 2),
+            'arch_angle_deg': round(np.degrees(angle_rad), 2),
             'heel_point': heel.tolist(),
             'arch_point': arch.tolist(),
             'forefoot_point': forefoot.tolist(),
@@ -1063,10 +1066,8 @@ Exemples:
             print("Vérifiez l'installation avec: python mobile_sam_podiatry.py --validate")
             return
         
-        # Traiter l'image
         result = pipeline.process_foot_image(args.image, debug=args.debug)
         
-        # Afficher les résultats
         if 'error' in result:
             print(f"\n❌ Erreur: {result['error']}")
         else:
@@ -1082,7 +1083,6 @@ Exemples:
                 print("\n📁 Images de debug sauvegardées dans output/")
     
     else:
-        # Afficher l'aide si aucun argument
         parser.print_help()
         
         print("\n📱 UTILISATION RAPIDE POUR MOBILE:")
