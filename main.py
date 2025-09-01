@@ -59,12 +59,26 @@ Exemples :
         if 'error' in result:
             print(f"❌ Erreur: {result['error']}")
         else:
-            print("\n✅ MESURES COMBINÉES :")
-            print(f"📐 Largeur : {result['width_cm']} cm")
+            print("\n✅ MESURES COMBINÉES (Format Client) :")
             print(f"📏 Longueur: {result['length_cm']} cm")
-            print(f"📈 Hauteur voûte: {result['arch_height_cm']} cm")
+            print(f"📐 Largeur : {result['width_cm']} cm")
+            print(f"📈 Hauteur voûte: {result['instep_height_cm']} cm")
             print(f"∠ Angle voûte : {result['arch_angle_deg']}°")
+            print(f"🦶 Angle orteils: {result['toe_angle_deg']}°")
             print(f"✨ Confiance : {result['confidence']}%")
+            print(f"🎯 Calibration : {result['calibration_method']}")
+            
+            # Output JSON format for mobile integration
+            print(f"\n📱 JSON pour intégration mobile:")
+            import json
+            mobile_json = {
+                "length_cm": result['length_cm'],
+                "width_cm": result['width_cm'],
+                "instep_height_cm": result['instep_height_cm'],
+                "arch_angle_deg": result['arch_angle_deg'],
+                "toe_angle_deg": result['toe_angle_deg']
+            }
+            print(json.dumps(mobile_json, indent=2))
 
             if args.debug:
                 print("📁 Images debug sauvegardées dans le dossier output/")
