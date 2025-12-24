@@ -6,7 +6,8 @@ import numpy as np
 import os
 import torch
 from datetime import datetime
-from scipy.spatial import distance
+from utils import keep_foot_only
+
 
 # SAM imports avec gestion d'erreur
 try:
@@ -22,8 +23,8 @@ CREDIT_CARD_HEIGHT_MM = 53.98
 CARD_ASPECT_RATIO = CREDIT_CARD_WIDTH_MM / CREDIT_CARD_HEIGHT_MM
 
 # ArUco L-shaped board configuration
-ARUCO_L_BOARD_SIZE_MM = 100.0  # Size of each ArUco marker in mm
-ARUCO_L_BOARD_SEPARATION_MM = 20.0  # Separation between markers in mm
+ARUCO_L_BOARD_SIZE_MM = 60.0  # Size of each ArUco marker in mm (Adjusted for A4 print)
+ARUCO_L_BOARD_SEPARATION_MM = 12.0  # Separation between markers in mm
 ARUCO_DICT = cv2.aruco.DICT_6X6_250  # ArUco dictionary
 
 class MobileSAMPodiatryPipeline:
@@ -171,6 +172,12 @@ class MobileSAMPodiatryPipeline:
         foot_mask, _, _ = self._identify_foot_and_card(masks, image_rgb)
         if foot_mask is None:
             return {'error': "Pied non détecté"}
+            
+        # Refine foot mask to remove ankle/leg
+        print("✂️ Affinement du masque pied (suppression cheville)...")
+        # Try to automatically determine orientation or just use 'y' as it handles the "leg above foot" case
+        # For side view, foot is usually horizontal on ground, leg goes up (Y axis scan, measuring X width)
+        foot_mask = keep_foot_only(foot_mask, axis='y')
 
         # 5. Mesurer le pied avec calibration 3D si disponible
         if calibration_method == "aruco":
@@ -487,80 +494,6 @@ class MobileSAMPodiatryPipeline:
         
         return ordered
     
-    def _correct_perspective(self, image, card_corners):
-        """Corrige la perspective en utilisant la carte comme référence"""
-        # Dimensions cibles pour la carte (en pixels)
-        # On garde un ratio correct
-        target_width = 400  # pixels
-        target_height = int(target_width / CARD_ASPECT_RATIO)
-        
-        # Points de destination pour la carte
-        dst_corners = np.array([
-            [0, 0],
-            [target_width - 1, 0],
-            [target_width - 1, target_height - 1],
-            [0, target_height - 1]
-        ], dtype=np.float32)
-        
-        # Calculer la transformation perspective
-        transform_matrix = cv2.getPerspectiveTransform(
-            card_corners.astype(np.float32), 
-            dst_corners
-        )
-        
-        # Calculer la taille finale de l'image
-        # On veut garder tout le contenu visible
-        h, w = image.shape[:2]
-        corners_img = np.array([
-            [0, 0],
-            [w - 1, 0],
-            [w - 1, h - 1],
-            [0, h - 1]
-        ], dtype=np.float32).reshape(-1, 1, 2)
-        
-        # Transformer les coins de l'image
-        transformed_corners = cv2.perspectiveTransform(corners_img, transform_matrix)
-        
-        # Trouver la boîte englobante
-        x_min = int(transformed_corners[:, :, 0].min())
-        x_max = int(transformed_corners[:, :, 0].max())
-        y_min = int(transformed_corners[:, :, 1].min())
-        y_max = int(transformed_corners[:, :, 1].max())
-        
-        # Ajuster la transformation pour tout garder visible
-        translation = np.array([
-            [1, 0, -x_min],
-            [0, 1, -y_min],
-            [0, 0, 1]
-        ])
-        
-        adjusted_transform = translation @ transform_matrix
-        output_width = x_max - x_min
-        output_height = y_max - y_min
-        
-        # Appliquer la transformation
-        warped = cv2.warpPerspective(
-            image, 
-            adjusted_transform, 
-            (output_width, output_height),
-            flags=cv2.INTER_LINEAR
-        )
-        
-        return warped, adjusted_transform
-    
-    def _calculate_ratio_from_card(self, warped_image):
-        """Calcule le ratio px/mm à partir de la carte dans l'image corrigée"""
-        # Comme on a défini target_width = 400 pixels pour la carte après correction
-        # et que la carte fait CREDIT_CARD_WIDTH_MM millimètres
-        # Le ratio est simplement :
-        target_card_width_px = 400  # Défini dans _correct_perspective
-        ratio_px_mm = target_card_width_px / CREDIT_CARD_WIDTH_MM
-        
-        print(f"✅ Carte normalisée: {target_card_width_px}px = {CREDIT_CARD_WIDTH_MM}mm")
-        print(f"📏 Ratio: {ratio_px_mm:.3f} px/mm")
-        
-        return ratio_px_mm
-    
     def _detect_aruco_l_board(self, image):
         """
         Detect ArUco L-shaped board and calculate 3D-aware calibration
@@ -790,14 +723,14 @@ class MobileSAMPodiatryPipeline:
         
         # Mesures avancées
         # Trouver la largeur réelle (pas juste le rectangle)
-        real_width_px = self._find_real_width(foot_mask, foot_contour)
+        real_width_px, _, _ = self._find_max_width_points(foot_mask, foot_contour)
         real_width_cm = (real_width_px / ratio_px_mm) / 10
         
         # Points caractéristiques
         heel_point, toe_point = self._find_heel_and_toe(foot_contour)
         
         # Distance réelle talon-orteil
-        real_length_px = distance.euclidean(heel_point, toe_point)
+        real_length_px = np.linalg.norm(heel_point - toe_point)
         real_length_cm = (real_length_px / ratio_px_mm) / 10
         
         # Aire du pied
@@ -824,22 +757,6 @@ class MobileSAMPodiatryPipeline:
         
         return measurements
     
-    def _find_real_width(self, foot_mask, contour):
-        """Trouve la largeur réelle maximale du pied"""
-        h, w = foot_mask.shape
-        mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.drawContours(mask, [contour], -1, 255, -1)
-
-        max_width = 0
-        for y in range(h):
-            row = mask[y, :]
-            if np.any(row):
-                indices = np.where(row)[0]
-                width = indices[-1] - indices[0]
-                max_width = max(max_width, width)
-
-        return max_width
-
     def _find_max_width_points(self, foot_mask, contour):
         """Retourne la largeur maximale et les points gauche/droit correspondants"""
         h, w = foot_mask.shape
@@ -891,18 +808,6 @@ class MobileSAMPodiatryPipeline:
         
         return mask
     
-    def _calculate_confidence(self, foot_mask, card_mask):
-        """Calcule un score de confiance global"""
-        confidence = 50  # Base
-
-        if foot_mask is not None:
-            confidence += 25
-        
-        if card_mask is not None:
-            confidence += 25
-        
-        return min(confidence, 100)
-    
     def _calculate_confidence_new(self, foot_mask, calibration_data):
         """Calculate confidence score for new calibration system"""
         confidence = 50  # Base confidence
@@ -921,7 +826,7 @@ class MobileSAMPodiatryPipeline:
 
     # -----------------------------------------------------.
 
-    def _measure_side_view(self, image, foot_mask, ratio_px_mm):
+    def _measure_side_view(self, image, foot_mask, ratio_px_mm, foot_side='right', calibration_data=None):
         """Enhanced side view analysis with improved ground line and arch detection"""
         contours, _ = cv2.findContours(foot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
@@ -933,21 +838,32 @@ class MobileSAMPodiatryPipeline:
         # Enhanced ground line detection
         ground_y = self._detect_robust_ground_line(pts, image.shape)
 
-        # Improved heel and toe detection
-        heel, forefoot = self._detect_heel_toe_robust(pts, ground_y)
+        # Improved heel and toe detection with side support
+        heel, forefoot = self._detect_heel_toe_robust(pts, ground_y, foot_side)
 
         # Enhanced arch detection
         arch, instep_height = self._detect_arch_robust(pts, heel, forefoot, ground_y)
 
         # Measurements
-        length_px = np.linalg.norm(forefoot - heel)
+        # Use robust 3D/2D length calculation logic (as in process_foot_image)
+        if calibration_data:
+            measurements_3d = self._calculate_3d_measurements(contour, calibration_data, view_type='side')
+            length_cm = measurements_3d['length_cm']
+            # We keep our specific arch/instep calculations, but we could check if 3D provides better
+        else:
+            length_px = np.linalg.norm(forefoot - heel)
+            length_cm = round((length_px / ratio_px_mm) / 10, 2)
+
         arch_height_px = instep_height
         
         # Improved arch angle calculation
         arch_angle_rad = self._calculate_arch_angle(heel, arch, forefoot, ground_y)
 
+        # Extract detailed arch profile for CAD/JSON
+        arch_profile = self._extract_arch_profile(pts, heel, forefoot, ground_y)
+
         return {
-            'length_cm': round((length_px / ratio_px_mm) / 10, 2),
+            'length_cm': length_cm,
             'arch_height_cm': round((arch_height_px / ratio_px_mm) / 10, 2),
             'instep_height_cm': round((instep_height / ratio_px_mm) / 10, 2),
             'arch_angle_deg': round(np.degrees(arch_angle_rad), 2),
@@ -955,8 +871,50 @@ class MobileSAMPodiatryPipeline:
             'arch_point': arch.tolist(),
             'forefoot_point': forefoot.tolist(),
             'ground_y': int(ground_y),
-            'ratio_px_mm': round(ratio_px_mm, 3)
+            'ratio_px_mm': round(ratio_px_mm, 3),
+            'arch_profile': arch_profile,  # List of [x, y] points
+            'aruco_detected': calibration_data.get('board_detected', False) if calibration_data else False
         }
+
+    def _extract_arch_profile(self, pts, heel, toe, ground_y):
+        """
+        Extracts the bottom curve of the foot (arch) between heel and toe.
+        Returns a sorted list of [x, y] points.
+        """
+        # Determine X range
+        x_min = min(heel[0], toe[0])
+        x_max = max(heel[0], toe[0])
+        
+        # Filter points within X range
+        # And only points in the bottom half of the foot (to avoid top of foot)
+        y_center = (pts[:, 1].min() + pts[:, 1].max()) / 2
+        
+        # Select points strictly between heel and toe in X, and "below" the center in Y
+        mask = (pts[:, 0] >= x_min) & (pts[:, 0] <= x_max) & (pts[:, 1] >= y_center)
+        arch_candidates = pts[mask]
+        
+        if len(arch_candidates) < 2:
+            return []
+
+        # For each X, we want the largest Y (closest to ground)
+        # We can bin X values to smooth the curve or just pick unique Xs
+        # A simple approach: sort by X
+        sorted_pts = arch_candidates[np.argsort(arch_candidates[:, 0])]
+        
+        # Downsample/Clean: Keep only the lowest point (max Y) for each X region
+        # This removes internal noise or multi-valued X
+        # We can simplify by just returning the sorted points for now, 
+        # or implementing a "lower envelope" filter.
+        
+        # Let's implement a simple lower envelope (max Y per X bucket)
+        unique_x = np.unique(sorted_pts[:, 0])
+        profile = []
+        for x in unique_x:
+            ys = sorted_pts[sorted_pts[:, 0] == x][:, 1]
+            max_y = ys.max() # Closest to ground
+            profile.append([int(x), int(max_y)])
+            
+        return profile
 
     def _detect_robust_ground_line(self, pts, image_shape):
         """Robust ground line detection using multiple methods"""
@@ -1003,20 +961,43 @@ class MobileSAMPodiatryPipeline:
         
         return int(ground_y)
 
-    def _detect_heel_toe_robust(self, pts, ground_y):
-        """Improved heel and toe detection"""
+    def _detect_heel_toe_robust(self, pts, ground_y, foot_side='right'):
+        """Improved heel and toe detection with side support"""
+        # Filter out points at the top edge (likely cut artifacts)
+        min_y = pts[:, 1].min()
+        height = pts[:, 1].max() - min_y
+        exclude_margin = max(5, height * 0.05)
+        
+        # Points that are NOT at the absolute top (cut line)
+        valid_pts = pts[pts[:, 1] > (min_y + exclude_margin)]
+        if len(valid_pts) == 0:
+            valid_pts = pts
+
         # Find points near the ground line
         ground_tolerance = 15
         ground_points = pts[np.abs(pts[:, 1] - ground_y) <= ground_tolerance]
         
-        if len(ground_points) < 2:
-            # Fallback to extreme points
-            heel = pts[pts[:, 0].argmin()]
-            toe = pts[pts[:, 0].argmax()]
+        # Determine ROI for heel/toe (bottom 60% of the foot)
+        y_max = pts[:, 1].max()
+        y_min = pts[:, 1].min()
+        foot_height = y_max - y_min
+        bottom_threshold = y_max - (foot_height * 0.6)
+        
+        # Filter points to only consider the bottom part for heel/toe extremes
+        bottom_pts = valid_pts[valid_pts[:, 1] >= bottom_threshold]
+        if len(bottom_pts) == 0:
+            bottom_pts = valid_pts
+
+        search_pts = ground_points if len(ground_points) >= 2 else bottom_pts
+        
+        if foot_side == 'left':
+            # Left foot (medial view): Heel is Right (Max X), Toe is Left (Min X)
+            heel = search_pts[search_pts[:, 0].argmax()]
+            toe = search_pts[search_pts[:, 0].argmin()]
         else:
-            # Use ground-level extreme points
-            heel = ground_points[ground_points[:, 0].argmin()]
-            toe = ground_points[ground_points[:, 0].argmax()]
+            # Right foot (medial view): Heel is Left (Min X), Toe is Right (Max X)
+            heel = search_pts[search_pts[:, 0].argmin()]
+            toe = search_pts[search_pts[:, 0].argmax()]
         
         return heel, toe
 
@@ -1027,7 +1008,11 @@ class MobileSAMPodiatryPipeline:
         arch_start = heel[0] + foot_length * 0.3
         arch_end = heel[0] + foot_length * 0.7
         
-        arch_region = pts[(pts[:, 0] >= arch_start) & (pts[:, 0] <= arch_end)]
+        # Handle left/right direction for range filtering
+        x_s = min(arch_start, arch_end)
+        x_e = max(arch_start, arch_end)
+        
+        arch_region = pts[(pts[:, 0] >= x_s) & (pts[:, 0] <= x_e)]
         
         if len(arch_region) == 0:
             # Fallback to simple highest point
@@ -1078,28 +1063,15 @@ class MobileSAMPodiatryPipeline:
         return arch, max(instep_height, 0)
 
     def _calculate_arch_angle(self, heel, arch, toe, ground_y):
-        """Calculate arch angle with improved accuracy"""
-        # Method 1: Angle from heel to arch
-        heel_to_arch = np.arctan2(arch[1] - ground_y, arch[0] - heel[0])
+        """Calculate arch angle with improved accuracy (elevation angle)"""
+        # Always calculate positive elevation angle from heel
+        dx = abs(arch[0] - heel[0])
+        dy = ground_y - arch[1] # Positive height from ground
         
-        # Method 2: Angle of arch relative to foot length
-        foot_vector = toe - heel
-        arch_vector = arch - heel
-        
-        # Project arch vector onto foot vector
-        projection_length = np.dot(arch_vector, foot_vector) / np.linalg.norm(foot_vector)
-        arch_height = ground_y - arch[1]
-        
-        # Calculate angle from projection
-        if projection_length > 0:
-            angle_from_projection = np.arctan2(arch_height, projection_length)
-        else:
-            angle_from_projection = heel_to_arch
-        
-        # Average the two methods
-        final_angle = (heel_to_arch + angle_from_projection) / 2
-        
-        return final_angle
+        if dx == 0:
+            return np.pi / 2
+            
+        return np.arctan2(dy, dx)
 
     def _calculate_toe_angle(self, contour, ratio_px_mm):
         """Enhanced toe angle calculation for foot progression angle"""
@@ -1185,7 +1157,8 @@ class MobileSAMPodiatryPipeline:
             'toe_width_cm': round(toe_width_cm, 2),
             'left_point': list(left_pt),
             'right_point': list(right_pt),
-            'ratio_px_mm': round(ratio_px_mm, 3)
+            'ratio_px_mm': round(ratio_px_mm, 3),
+            'contour': contour  # Keep as numpy array for internal use (DXF export)
         }
 
     def process_top_view_image(self, image_path, debug=False):
@@ -1199,34 +1172,55 @@ class MobileSAMPodiatryPipeline:
         if not self.initialized:
             return {'error': 'SAM non initialisé'}
 
+        # Attempt ArUco detection first
+        ratio_px_mm, calibration_data, aruco_markers = self._detect_aruco_l_board(image_rgb)
+        aruco_detected = ratio_px_mm is not None
+
         masks = self.mask_generator.generate(image_rgb)
         if not masks:
             return {'error': 'Aucun masque généré par SAM'}
 
-        foot_mask, card_mask, _ = self._identify_foot_and_card(masks, image_rgb)
+        # If ArUco detected, we only need to find the foot
+        # If not, we fall back to identifying foot AND card
+        if aruco_detected:
+            foot_mask, _, _ = self._identify_foot_and_card(masks, image_rgb)
+            card_mask = None # Not needed/detected
+        else:
+            foot_mask, card_mask, _ = self._identify_foot_and_card(masks, image_rgb)
+
         if foot_mask is None:
             return {'error': 'Pied non détecté'}
-        if card_mask is None:
-            return {'error': 'Carte non détectée'}
+        
+        if not aruco_detected and card_mask is None:
+            return {'error': 'Carte/ArUco non détectée'}
 
-        contours, _ = cv2.findContours(card_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        card_contour = max(contours, key=cv2.contourArea)
-        rect = cv2.minAreaRect(card_contour)
-        card_px = max(rect[1])
-        ratio_px_mm = card_px / CREDIT_CARD_WIDTH_MM
+        # Calibration Strategy
+        if aruco_detected:
+            print(f"✅ ArUco calibration used: {ratio_px_mm:.3f} px/mm")
+        elif card_mask is not None:
+            contours, _ = cv2.findContours(card_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            card_contour = max(contours, key=cv2.contourArea)
+            rect = cv2.minAreaRect(card_contour)
+            card_px = max(rect[1])
+            ratio_px_mm = card_px / CREDIT_CARD_WIDTH_MM
+            calibration_data = {} # No special calibration data for card
 
         measures = self._measure_top_view(image_rgb, foot_mask, ratio_px_mm)
         measures.update({
             'image_path': image_path,
-            'confidence': self._calculate_confidence(foot_mask, card_mask)
+            'confidence': self._calculate_confidence_new(foot_mask, calibration_data if aruco_detected else {}),
+            'aruco_detected': aruco_detected
         })
 
         if debug:
-            self._save_top_view_debug(image_rgb, foot_mask, card_mask, measures)
+            if aruco_detected:
+                 self._save_debug_images_new(image_rgb, foot_mask, None, aruco_markers, measures, calibration_data)
+            else:
+                 self._save_top_view_debug(image_rgb, foot_mask, card_mask, measures)
 
         return measures
 
-    def process_side_view_image(self, image_path, debug=False):
+    def process_side_view_image(self, image_path, debug=False, foot_side='right'):
         """Traite la vue de profil du pied"""
         image = cv2.imread(image_path)
         if image is None:
@@ -1237,30 +1231,54 @@ class MobileSAMPodiatryPipeline:
         if not self.initialized:
             return {'error': 'SAM non initialisé'}
 
+        # Attempt ArUco detection first
+        ratio_px_mm, calibration_data, aruco_markers = self._detect_aruco_l_board(image_rgb)
+        aruco_detected = ratio_px_mm is not None
+
         masks = self.mask_generator.generate(image_rgb)
         if not masks:
             return {'error': 'Aucun masque généré par SAM'}
 
-        foot_mask, card_mask, _ = self._identify_foot_and_card(masks, image_rgb)
+        # Identify foot (and card if needed fallback)
+        if aruco_detected:
+             foot_mask, _, _ = self._identify_foot_and_card(masks, image_rgb)
+             card_mask = None
+        else:
+             foot_mask, card_mask, _ = self._identify_foot_and_card(masks, image_rgb)
+
         if foot_mask is None:
             return {'error': 'Pied non détecté'}
-        if card_mask is None:
-            return {'error': 'Carte non détectée'}
+            
+        # Refine foot mask to remove ankle/leg
+        print("✂️ Affinement du masque pied (suppression cheville) - Vue Profil...")
+        foot_mask = keep_foot_only(foot_mask, axis='y')
 
-        contours, _ = cv2.findContours(card_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        card_contour = max(contours, key=cv2.contourArea)
-        rect = cv2.minAreaRect(card_contour)
-        card_px = max(rect[1])
-        ratio_px_mm = card_px / CREDIT_CARD_WIDTH_MM
+        if not aruco_detected and card_mask is None:
+            return {'error': 'Carte/ArUco non détectée'}
 
-        measures = self._measure_side_view(image_rgb, foot_mask, ratio_px_mm)
+        # Calibration Strategy
+        if aruco_detected:
+             print(f"✅ ArUco calibration used: {ratio_px_mm:.3f} px/mm")
+        elif card_mask is not None:
+            contours, _ = cv2.findContours(card_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            card_contour = max(contours, key=cv2.contourArea)
+            rect = cv2.minAreaRect(card_contour)
+            card_px = max(rect[1])
+            ratio_px_mm = card_px / CREDIT_CARD_WIDTH_MM
+            calibration_data = {'ratio_px_mm': ratio_px_mm}
+
+        measures = self._measure_side_view(image_rgb, foot_mask, ratio_px_mm, foot_side, calibration_data)
         measures.update({
             'image_path': image_path,
-            'confidence': self._calculate_confidence(foot_mask, card_mask)
+            'confidence': self._calculate_confidence_new(foot_mask, calibration_data if aruco_detected else {}),
+            'aruco_detected': aruco_detected
         })
 
         if debug:
-            self._save_side_view_debug(image_rgb, foot_mask, card_mask, measures)
+             if aruco_detected:
+                 self._save_debug_images_new(image_rgb, foot_mask, None, aruco_markers, measures, calibration_data)
+             else:
+                 self._save_side_view_debug(image_rgb, foot_mask, card_mask, measures)
 
         return measures
 
@@ -1270,9 +1288,49 @@ class MobileSAMPodiatryPipeline:
         if 'error' in top:
             return {'error': f"Top view: {top['error']}"}
 
-        side = self.process_side_view_image(side_image_path, debug)
+        side = self.process_side_view_image(side_image_path, debug, foot_side)
         if 'error' in side:
             return {'error': f"Side view: {side['error']}"}
+
+        # Generate DXF files for CAD integration
+        dxf_path = None
+        profile_dxf_path = None
+        
+        output_dir = "output/dxf"
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # 1. Top View Contour DXF
+        if 'contour' in top:
+            try:
+                from dxf_export import DXFExporter
+                filename = f"foot_contour_{foot_side}_{timestamp}.dxf"
+                dxf_path = DXFExporter.export_contour_to_dxf(
+                    top['contour'], 
+                    top['ratio_px_mm'], 
+                    output_dir, 
+                    filename
+                )
+            except ImportError:
+                print("⚠️ DXFExporter module not found")
+            except Exception as e:
+                print(f"⚠️ DXF Export failed: {e}")
+
+        # 2. Side View Profile DXF
+        if 'arch_profile' in side:
+            try:
+                from dxf_export import DXFExporter
+                filename = f"arch_profile_{foot_side}_{timestamp}.dxf"
+                profile_dxf_path = DXFExporter.create_side_view_profile_dxf(
+                    side['arch_profile'],
+                    side['ratio_px_mm'],
+                    output_dir,
+                    filename
+                )
+            except Exception as e:
+                print(f"⚠️ Profile DXF Export failed: {e}")
 
         # Create the exact format requested by client
         result = {
@@ -1284,10 +1342,15 @@ class MobileSAMPodiatryPipeline:
             'confidence': round((side.get('confidence', 50) + top.get('confidence', 50)) / 2, 1),
             'foot_side': foot_side,
             'calibration_method': {
-                'top_view': 'aruco' if side.get('aruco_detected', False) else 'credit_card',
+                'top_view': 'aruco' if top.get('aruco_detected', False) else 'credit_card',
                 'side_view': 'aruco' if side.get('aruco_detected', False) else 'credit_card'
             },
-            'processing_timestamp': datetime.now().isoformat()
+            'processing_timestamp': datetime.now().isoformat(),
+            'files': {
+                'dxf_contour': dxf_path,
+                'dxf_profile': profile_dxf_path
+            },
+            'arch_profile_points': side.get('arch_profile', [])
         }
 
         return result
@@ -1404,81 +1467,6 @@ class MobileSAMPodiatryPipeline:
                     f.write(f"- {key}: {value}\n")
         
         print(f"📁 Debug saved to: {debug_dir}")
-
-    def _save_debug_images(self, original, foot_mask, card_mask, card_corners,
-                          warped, warped_foot_mask, measurements):
-        """Sauvegarde les images de debug"""
-        debug_dir = f"output/debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        os.makedirs(debug_dir, exist_ok=True)
-        
-        # 1. Image originale avec masques
-        vis1 = original.copy()
-        if foot_mask is not None:
-            foot_overlay = np.zeros_like(vis1)
-            foot_overlay[foot_mask > 0] = [0, 255, 0]
-            vis1 = cv2.addWeighted(vis1, 0.7, foot_overlay, 0.3, 0)
-        
-        if card_mask is not None:
-            card_overlay = np.zeros_like(vis1)
-            card_overlay[card_mask > 0] = [255, 0, 0]
-            vis1 = cv2.addWeighted(vis1, 0.7, card_overlay, 0.3, 0)
-        
-        if card_corners is not None:
-            cv2.polylines(vis1, [card_corners.astype(int)], True, (255, 255, 0), 3)
-            for i, corner in enumerate(card_corners):
-                cv2.circle(vis1, tuple(corner.astype(int)), 10, (255, 0, 255), -1)
-                cv2.putText(vis1, str(i), tuple(corner.astype(int)), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        
-        cv2.imwrite(f"{debug_dir}/01_segmentation.jpg", cv2.cvtColor(vis1, cv2.COLOR_RGB2BGR))
-        
-        # 2. Image corrigée
-        cv2.imwrite(f"{debug_dir}/02_perspective_corrected.jpg", 
-                   cv2.cvtColor(warped, cv2.COLOR_RGB2BGR))
-        
-        # 3. Masque pied corrigé
-        cv2.imwrite(f"{debug_dir}/03_foot_mask_corrected.jpg", warped_foot_mask)
-        
-        # 4. Mesures visualisées
-        vis_measures = warped.copy()
-        contours, _ = cv2.findContours(warped_foot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours, _ = cv2.findContours(card_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        if contours:
-            cv2.drawContours(vis_measures, contours, -1, (0, 255, 0), 2)
-            cv2.drawContours(vis1, contours, -1, (0, 255, 255), 2)
-
-            # Dessiner les points caractéristiques
-            if 'heel_position' in measurements:
-                heel = measurements['heel_position']
-                toe = measurements['toe_position']
-                cv2.circle(vis_measures, tuple(heel), 10, (255, 0, 0), -1)
-                cv2.circle(vis_measures, tuple(toe), 10, (0, 0, 255), -1)
-                cv2.line(vis_measures, tuple(heel), tuple(toe), (255, 255, 0), 2)
-        
-        cv2.imwrite(f"{debug_dir}/04_measurements.jpg", 
-                   cv2.cvtColor(vis_measures, cv2.COLOR_RGB2BGR))
-        
-        # 5. Rapport texte
-        with open(f"{debug_dir}/05_report.txt", 'w', encoding='utf-8') as f:
-            f.write("RAPPORT DE MESURES PODIATRIQUES\n")
-            f.write("="*50 + "\n\n")
-            f.write(f"Date: {measurements['processing_timestamp']}\n")
-            f.write(f"Image: {measurements['image_path']}\n")
-            f.write(f"Dimensions originales: {measurements['original_dimensions']}\n")
-            f.write(f"Perspective corrigée: {measurements['perspective_corrected']}\n")
-            f.write(f"Carte détectée: {measurements['card_detected']}\n")
-            f.write(f"Confiance: {measurements['confidence']}%\n\n")
-            
-            f.write("MESURES DU PIED:\n")
-            f.write(f"- Longueur: {measurements['length_cm']} cm\n")
-            f.write(f"- Largeur: {measurements['width_cm']} cm\n")
-            f.write(f"- Ratio L/l: {measurements['length_width_ratio']}\n")
-            f.write(f"- Surface: {measurements['area_cm2']} cm²\n")
-            f.write(f"- Périmètre: {measurements['perimeter_cm']} cm\n")
-            f.write(f"\nRatio px/mm: {measurements['ratio_px_mm']}\n")
-        
-        print(f"📁 Debug sauvegardé dans: {debug_dir}")
 
 
 # ===== FONCTIONS UTILITAIRES =====

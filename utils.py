@@ -89,6 +89,95 @@ def drawCnt(bRect, contours, cntPoly, img):
     
     return drawing
 
+def keep_foot_only(mask, axis='y'):
+    """
+    Refine mask to keep only the foot part, removing ankle/leg based on silhouette thickness.
+    axis='y': Scans rows (vertical). Assumes leg is at the top (low Y). Good for side view.
+    axis='x': Scans columns (horizontal). Assumes leg is at left/right.
+    """
+    # mask: binary uint8 {0,255} or {0,1}
+    m = (mask > 0).astype(np.uint8)
+    h, w = m.shape
+    
+    # Adaptive kernel size for smoothing (2% of dimension, odd number)
+    k_size_y = int(h * 0.02) | 1
+    k_size_x = int(w * 0.02) | 1
+
+    if axis == 'y':
+        # for each y, thickness in x
+        thickness = np.zeros(h, dtype=np.int32)
+        for y in range(h):
+            xs = np.where(m[y, :] > 0)[0]
+            if len(xs) > 0:
+                thickness[y] = xs.max() - xs.min()
+
+        # smooth a bit
+        thickness_s = cv2.GaussianBlur(thickness.reshape(1,-1).astype(np.float32), (k_size_y, 1), 0).ravel()
+
+        tmax = thickness_s.max()
+        if tmax <= 0:
+            return mask
+
+        y_peak = int(np.argmax(thickness_s))
+        
+        # Look "above" the peak (smaller y indices) for the "neck"
+        # We want to find where thickness drops significantly (leg width < foot length)
+        # Heuristic: < 72% of max thickness (very aggressive to ensure ankle removal)
+        
+        threshold = 0.72 * tmax
+        
+        # Check region above peak (0 to y_peak)
+        pre_peak = thickness_s[:y_peak]
+        cut_candidates = np.where(pre_peak < threshold)[0]
+        
+        if len(cut_candidates) > 0:
+            # We want the cut point closest to the peak (the "neck" junction)
+            # This is the largest index in cut_candidates
+            y_cut = cut_candidates[-1]
+            
+            print(f"✂️ Cutting mask at Y={y_cut} (Peak at {y_peak}, MaxW={tmax:.1f}, Thresh={threshold:.1f})")
+            
+            # Remove everything above y_cut (rows 0 to y_cut)
+            m[:y_cut, :] = 0
+            return (m * 255).astype(np.uint8)
+        else:
+            print(f"⚠️ No cut point found (MaxW={tmax:.1f}, Threshold={threshold:.1f})")
+
+    elif axis == 'x':
+        # for each x, thickness in y
+        thickness = np.zeros(w, dtype=np.int32)
+        for x in range(w):
+            ys = np.where(m[:, x] > 0)[0]
+            if len(ys) > 0:
+                thickness[x] = ys.max() - ys.min()
+
+        thickness_s = cv2.GaussianBlur(thickness.reshape(1,-1).astype(np.float32), (k_size_x, 1), 0).ravel()
+
+        tmax = thickness_s.max()
+        if tmax <= 0:
+            return mask
+
+        x_peak = int(np.argmax(thickness_s))
+        threshold = 0.65 * tmax
+        
+        # Try to find cut on RIGHT side (indices > x_peak)
+        right_candidates = np.where(thickness_s[x_peak:] < threshold)[0]
+        if len(right_candidates) > 0:
+            x_cut = x_peak + int(right_candidates[0])
+            print(f"✂️ Cutting mask at X={x_cut} (Right side)")
+            m[:, x_cut:] = 0
+            return (m * 255).astype(np.uint8)
+            
+        # Try to find cut on LEFT side (indices < x_peak)
+        left_candidates = np.where(thickness_s[:x_peak] < threshold)[0]
+        if len(left_candidates) > 0:
+            x_cut = left_candidates[-1]
+            print(f"✂️ Cutting mask at X={x_cut} (Left side)")
+            m[:, :x_cut] = 0
+            return (m * 255).astype(np.uint8)
+
+    return mask
+
 def calcFeetSize(pcropedImg, fboundRect):
     x1, y1, w1, h1 = 0, 0, pcropedImg.shape[1], pcropedImg.shape[0]
     y2 = int(h1/10)

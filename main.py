@@ -25,6 +25,8 @@ Exemples :
     parser.add_argument('--validate', action='store_true', help="Vérifier installation")
     parser.add_argument('--hybrid', nargs=2, metavar=('TOP', 'SIDE'),
                         help="Mesure combinée vue dessus + profil")
+    parser.add_argument('--side', choices=['left', 'right'], default='right',
+                        help="Côté du pied (left/right). Défaut: right")
     parser.add_argument('--model', choices=['vit_b', 'vit_l', 'vit_h'], default='vit_b',
                         help="Modèle SAM (vit_b par défaut)")
 
@@ -54,12 +56,14 @@ Exemples :
             print("❌ SAM non initialisé. Vérifiez `pip install segment-anything` et le modèle.")
             return
 
-        result = pipeline.process_hybrid_views(top_img, side_img, debug=args.debug)
+        print(f"🦶 Analyse du pied: {args.side.upper()}")
+        result = pipeline.process_hybrid_views(top_img, side_img, debug=args.debug, foot_side=args.side)
 
         if 'error' in result:
             print(f"❌ Erreur: {result['error']}")
         else:
             print("\n✅ MESURES COMBINÉES (Format Client) :")
+            print(f"🦶 Côté : {result['foot_side']}")
             print(f"📏 Longueur: {result['length_cm']} cm")
             print(f"📐 Largeur : {result['width_cm']} cm")
             print(f"📈 Hauteur voûte: {result['instep_height_cm']} cm")
