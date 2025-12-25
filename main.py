@@ -11,10 +11,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemples :
-  python main.py photo.jpg             # Mesure une image
-  python main.py photo.jpg --debug     # Sauvegarder debug
-  python main.py --batch dossier/      # Traiter dossier complet
-  python main.py --validate            # Vérifier installation
+  python main.py --top top.jpg                      # Vue dessus: largeur + toe_angle
+  python main.py --side-only side.jpg --side right  # Vue profil: longueur heel-toe
+  python main.py --hybrid top.jpg side.jpg          # Mesure combinée
+  python main.py photo.jpg                          # Mesure générique (legacy)
+  python main.py --validate                         # Vérifier installation
 """
     )
 
@@ -25,6 +26,10 @@ Exemples :
     parser.add_argument('--validate', action='store_true', help="Vérifier installation")
     parser.add_argument('--hybrid', nargs=2, metavar=('TOP', 'SIDE'),
                         help="Mesure combinée vue dessus + profil")
+    parser.add_argument('--top', metavar='IMAGE',
+                        help="Vue dessus uniquement (largeur + toe_angle) - ARUCO ONLY")
+    parser.add_argument('--side-only', metavar='IMAGE', dest='side_only',
+                        help="Vue profil uniquement (longueur heel-toe) - ARUCO ONLY")
     parser.add_argument('--side', choices=['left', 'right'], default='right',
                         help="Côté du pied (left/right). Défaut: right")
     parser.add_argument('--model', choices=['vit_b', 'vit_l', 'vit_h'], default='vit_b',
@@ -56,39 +61,128 @@ Exemples :
             print("❌ SAM non initialisé. Vérifiez `pip install segment-anything` et le modèle.")
             return
 
-        print(f"🦶 Analyse du pied: {args.side.upper()}")
-        result = pipeline.process_hybrid_views(top_img, side_img, debug=args.debug, foot_side=args.side)
+        print(f"🦶 Analyse combinée (Hybrid)...")
+        
+        # 1. Traitement TOP
+        print(f"\n--- [1/2] Traitement VUE DESSUS ({os.path.basename(top_img)}) ---")
+        top_result = pipeline.process_top_view(top_img, debug=args.debug)
+        
+        # 2. Traitement SIDE
+        print(f"\n--- [2/2] Traitement VUE PROFIL ({os.path.basename(side_img)}) ---")
+        side_result = pipeline.process_side_view(side_img, debug=args.debug, foot_side=args.side)
+
+        if 'error' in top_result:
+            print(f"❌ Erreur TOP: {top_result['error']}")
+            return
+        if 'error' in side_result:
+            print(f"❌ Erreur SIDE: {side_result['error']}")
+            return
+
+        # Fusion des résultats
+        result = {
+            'foot_side': args.side,
+            'length_cm': side_result['length_cm'],
+            'width_cm': top_result['width_cm'],
+            'toe_angle_deg': top_result.get('toe_angle_deg', 0),
+            'top_file': top_img,
+            'side_file': side_img
+        }
+
+        print("\n✅ MESURES COMBINÉES :")
+        print(f"🦶 Côté : {result['foot_side']}")
+        print(f"📏 Longueur: {result['length_cm']} cm")
+        print(f"📐 Largeur : {result['width_cm']} cm")
+        # print(f"🦶 Angle orteils: {result['toe_angle_deg']}°")
+        
+        # Output JSON format for mobile integration
+        import json
+        print(f"\n📱 JSON pour intégration mobile:")
+        print(json.dumps(result, indent=2))
+
+        if args.debug:
+            print("📁 Images debug sauvegardées dans le dossier output/")
+        return
+
+    # Cas : Vue profil uniquement (side)
+    if args.side_only:
+        if not os.path.exists(args.side_only):
+            print(f"❌ Fichier introuvable: {args.side_only}")
+            return
+
+        print(f"🚀 Initialisation SAM ({args.model}) ...")
+        pipeline = MobileSAMPodiatryPipeline(model_type=args.model)
+
+        if not pipeline.initialized:
+            print("❌ SAM non initialisé. Vérifiez `pip install segment-anything` et le modèle.")
+            return
+
+        print(f"👁️ Analyse vue PROFIL (side view)...")
+        result = pipeline.process_side_view(args.side_only, debug=args.debug)
 
         if 'error' in result:
             print(f"❌ Erreur: {result['error']}")
         else:
-            print("\n✅ MESURES COMBINÉES (Format Client) :")
-            print(f"🦶 Côté : {result['foot_side']}")
-            print(f"📏 Longueur: {result['length_cm']} cm")
-            print(f"📐 Largeur : {result['width_cm']} cm")
-            print(f"📈 Hauteur voûte: {result['instep_height_cm']} cm")
-            print(f"∠ Angle voûte : {result['arch_angle_deg']}°")
-            print(f"🦶 Angle orteils: {result['toe_angle_deg']}°")
-            print(f"✨ Confiance : {result['confidence']}%")
-            print(f"🎯 Calibration : {result['calibration_method']}")
-            
-            # Output JSON format for mobile integration
-            print(f"\n📱 JSON pour intégration mobile:")
-            import json
-            mobile_json = {
-                "length_cm": result['length_cm'],
-                "width_cm": result['width_cm'],
-                "instep_height_cm": result['instep_height_cm'],
-                "arch_angle_deg": result['arch_angle_deg'],
-                "toe_angle_deg": result['toe_angle_deg']
-            }
-            print(json.dumps(mobile_json, indent=2))
+            print("\n✅ MESURES VUE PROFIL :")
+            print(f"📏 Longueur : {result['length_cm']} cm")
 
             if args.debug:
                 print("📁 Images debug sauvegardées dans le dossier output/")
         return
 
-    # Cas : Image unique
+    # Cas : Vue dessus uniquement (top)
+    if args.top:
+        if not os.path.exists(args.top):
+            print(f"❌ Fichier introuvable: {args.top}")
+            return
+
+        print(f"🚀 Initialisation SAM ({args.model}) ...")
+        pipeline = MobileSAMPodiatryPipeline(model_type=args.model)
+
+        if not pipeline.initialized:
+            print("❌ SAM non initialisé. Vérifiez `pip install segment-anything` et le modèle.")
+            return
+
+        print("👁️ Analyse vue DESSUS (top view)...")
+        result = pipeline.process_top_view(args.top, debug=args.debug)
+
+        if 'error' in result:
+            print(f"❌ Erreur: {result['error']}")
+        else:
+            print("\n✅ MESURES VUE DESSUS :")
+            print(f"📐 Largeur : {result['width_cm']} cm")
+            # print(f"🦶 Angle orteils: {result['toe_angle_deg']}°") # Optional now
+
+            if args.debug:
+                print("📁 Images debug sauvegardées dans le dossier output/")
+        return
+
+    # Cas : Vue profil uniquement (side)
+    if args.side_only:
+        if not os.path.exists(args.side_only):
+            print(f"❌ Fichier introuvable: {args.side_only}")
+            return
+
+        print(f"🚀 Initialisation SAM ({args.model}) ...")
+        pipeline = MobileSAMPodiatryPipeline(model_type=args.model)
+
+        if not pipeline.initialized:
+            print("❌ SAM non initialisé. Vérifiez `pip install segment-anything` et le modèle.")
+            return
+
+        print(f"👁️ Analyse vue PROFIL (side view)...")
+        result = pipeline.process_side_view(args.side_only, debug=args.debug, foot_side=args.side)
+
+        if 'error' in result:
+            print(f"❌ Erreur: {result['error']}")
+        else:
+            print("\n✅ MESURES VUE PROFIL :")
+            print(f"📏 Longueur : {result['length_cm']} cm")
+
+            if args.debug:
+                print("📁 Images debug sauvegardées dans le dossier output/")
+        return
+
+    # Cas : Image unique (Défaut -> Side View)
     if args.image:
         if not os.path.exists(args.image):
             print(f"❌ Fichier introuvable: {args.image}")
@@ -101,17 +195,14 @@ Exemples :
             print("❌ SAM non initialisé. Vérifiez `pip install segment-anything` et le modèle.")
             return
 
-        result = pipeline.process_foot_image(args.image, debug=args.debug)
+        print(f"ℹ️ Mode par défaut : Analyse VUE PROFIL (Side View - Pied {args.side})")
+        result = pipeline.process_side_view(args.image, debug=args.debug, foot_side=args.side)
 
         if 'error' in result:
             print(f"❌ Erreur: {result['error']}")
         else:
             print("\n✅ MESURES :")
             print(f"📏 Longueur: {result['length_cm']} cm")
-            print(f"📐 Largeur : {result['width_cm']} cm")
-            print(f"🔢 Ratio L/l : {result['length_width_ratio']}")
-            print(f"📊 Surface : {result['area_cm2']} cm²")
-            print(f"🔄 Périmètre : {result['perimeter_cm']} cm")
             print(f"✨ Confiance : {result['confidence']}%")
 
             if args.debug:
@@ -119,7 +210,7 @@ Exemples :
 
     else:
         parser.print_help()
-        print("\n💡 Astuce : Essayez `python main.py image.jpg` ou `--batch dossier/`")
+        print("\n💡 Astuce : Essayez `python main.py image.jpg` (Profil) ou `--top image.jpg` (Dessus)")
 
 if __name__ == "__main__":
     main()
