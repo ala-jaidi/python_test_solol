@@ -143,7 +143,7 @@ Exemples :
             return
 
         print("👁️ Analyse vue DESSUS (top view)...")
-        result = pipeline.process_top_view(args.top, debug=args.debug)
+        result = pipeline.process_top_view(args.top, debug=args.debug, foot_side=args.side)
 
         if 'error' in result:
             print(f"❌ Erreur: {result['error']}")
