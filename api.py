@@ -66,7 +66,7 @@ async def measure_top_view(
         if not pipeline.initialized:
             raise HTTPException(status_code=500, detail="Model not initialized")
         
-        result = pipeline.process_top_view(image_path, debug=True)
+        result = pipeline.process_top_view(image_path, debug=True, foot_side=foot_side)
         
         if 'error' in result:
             return JSONResponse(status_code=400, content={
