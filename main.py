@@ -2,7 +2,7 @@
 
 import argparse
 import os
-from mobile_sam_podiatry import MobileSAMPodiatryPipeline, quick_measure, batch_process_folder, validate_setup
+from mobile_sam_podiatry import MobileSAMPodiatryPipeline
 
 def main():
     """Interface ligne de commande pour MobileSAMPodiatryPipeline"""
@@ -11,19 +11,15 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemples :
-  python main.py --top top.jpg                      # Vue dessus: largeur + toe_angle
+  python main.py --top top.jpg                      # Vue dessus: largeur
   python main.py --side-only side.jpg --side right  # Vue profil: longueur heel-toe
   python main.py --hybrid top.jpg side.jpg          # Mesure combinée
-  python main.py photo.jpg                          # Mesure générique (legacy)
-  python main.py --validate                         # Vérifier installation
+  python main.py photo.jpg                          # Mesure générique (défaut: side)
 """
     )
 
     parser.add_argument('image', nargs='?', help="Image à analyser")
     parser.add_argument('--debug', action='store_true', help="Sauver images debug")
-    parser.add_argument('--batch', metavar='FOLDER', help="Traiter un dossier")
-    parser.add_argument('--output', metavar='CSV', help="Fichier CSV pour --batch")
-    parser.add_argument('--validate', action='store_true', help="Vérifier installation")
     parser.add_argument('--hybrid', nargs=2, metavar=('TOP', 'SIDE'),
                         help="Mesure combinée vue dessus + profil")
     parser.add_argument('--top', metavar='IMAGE',
@@ -36,16 +32,6 @@ Exemples :
                         help="Modèle SAM (vit_b par défaut)")
 
     args = parser.parse_args()
-
-    # Cas : Vérifier installation
-    if args.validate:
-        validate_setup()
-        return
-
-    # Cas : Batch
-    if args.batch:
-        batch_process_folder(args.batch, args.output)
-        return
 
     # Cas : Mesure hybride top+side
     if args.hybrid:

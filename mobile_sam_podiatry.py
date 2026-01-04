@@ -1,10 +1,16 @@
 # mobile_sam_podiatry.py - Pipeline SAM simplifié pour application mobile podologue
 # SIDE uniquement via process_foot_image avec _find_heel_and_toe (talon=max Y, orteil=min Y)
 
+import os
+
+# Optimisation threads CPU (A definir avant les autres imports)
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "4"
+
 import cv2
 import numpy as np
-import os
 import torch
+torch.set_num_threads(4)
 from datetime import datetime
 from utils import keep_foot_only
 from dxf_export import DXFExporter
@@ -15,16 +21,11 @@ from dxf_export import DXFExporter
 
 # SAM imports avec gestion d'erreur
 try:
-    from segment_anything import sam_model_registry, SamPredictor, SamAutomaticMaskGenerator
+    from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
     SAM_AVAILABLE = True
 except ImportError:
     SAM_AVAILABLE = False
     print("⚠️ SAM non disponible - installer avec: pip install segment-anything")
-
-# Constantes carte de crédit standard (ISO/IEC 7810 ID-1)
-CREDIT_CARD_WIDTH_MM = 85.6
-CREDIT_CARD_HEIGHT_MM = 53.98
-CARD_ASPECT_RATIO = CREDIT_CARD_WIDTH_MM / CREDIT_CARD_HEIGHT_MM
 
 # ArUco L-shaped board configuration
 ARUCO_L_BOARD_SIZE_MM = 60.0
@@ -53,21 +54,33 @@ class MobileSAMPodiatryPipeline:
             try:
                 self.sam = sam_model_registry[model_type](checkpoint=checkpoint_path)
                 self.sam.to(device=self.device)
+                self.sam.eval()
                 
-                self.predictor = SamPredictor(self.sam)
+                # Optimisation CPU : Quantification Dynamique (int8)
+                if self.device == "cpu":
+                    print("⚡ Application de la quantification dynamique (int8) sur l'Image Encoder...")
+                    self.sam.image_encoder = torch.quantization.quantize_dynamic(
+                        self.sam.image_encoder,
+                        {torch.nn.Linear},
+                        dtype=torch.qint8
+                    )
                 
-                self.mask_generator = SamAutomaticMaskGenerator(
+                # 1. Générateur "Coarse" (Rapide, détection globale)
+                self.mask_generator_coarse = SamAutomaticMaskGenerator(
                     model=self.sam,
-                    points_per_side=20,
-                    pred_iou_thresh=0.90,
-                    stability_score_thresh=0.92,
+                    points_per_side=12,  # Réduit pour vitesse (Passe 1)
+                    pred_iou_thresh=0.86,
+                    stability_score_thresh=0.90,
                     crop_n_layers=0,
-                    min_mask_region_area=1200,
+                    min_mask_region_area=1000,
                     box_nms_thresh=0.7
                 )
+
+                # 2. Predictor "Fine" (Précis, piloté par points intelligents)
+                self.predictor = SamPredictor(self.sam)
                 
                 self.initialized = True
-                print(f"✅ Pipeline SAM unifié initialisé ({self.device})")
+                print(f"✅ Pipeline SAM unifié initialisé ({self.device}) - Mode Coarse-to-Fine (Smart Points)")
                 
             except Exception as e:
                 print(f"❌ Erreur initialisation SAM: {e}")
@@ -160,89 +173,130 @@ class MobileSAMPodiatryPipeline:
             if marker_id in [0, 1, 2]:
                 marker_positions[marker_id] = corners[i][0]
         
-        if 0 not in marker_positions or 1 not in marker_positions:
-            print("⚠️ ArUco L-board: Markers 0 and 1 required")
+        if len(marker_positions) < 2:
+            print("⚠️ ArUco L-board: At least 2 markers required")
             return None, None, None
+
+        # Stratégie de paires pour la calibration
+        # 0: Coin, 1: X-axis, 2: Y-axis
+        # Distance (0-1) = Distance (0-2) = known_distance_mm
+        # Distance (1-2) = known_distance_mm * sqrt(2)
         
-        marker0_center = np.mean(marker_positions[0], axis=0)
-        marker1_center = np.mean(marker_positions[1], axis=0)
-        
-        distance_px = np.linalg.norm(marker1_center - marker0_center)
         known_distance_mm = ARUCO_L_BOARD_SIZE_MM + ARUCO_L_BOARD_SEPARATION_MM
+        distance_px = 0
+        used_pair = ""
+
+        if 0 in marker_positions and 1 in marker_positions:
+            # Cas optimal : 0 et 1 (Axe principal)
+            p0 = np.mean(marker_positions[0], axis=0)
+            p1 = np.mean(marker_positions[1], axis=0)
+            distance_px = np.linalg.norm(p1 - p0)
+            used_pair = "0-1"
+            
+        elif 0 in marker_positions and 2 in marker_positions:
+            # Fallback : 0 et 2 (Axe secondaire)
+            p0 = np.mean(marker_positions[0], axis=0)
+            p2 = np.mean(marker_positions[2], axis=0)
+            distance_px = np.linalg.norm(p2 - p0)
+            used_pair = "0-2"
+            
+        elif 1 in marker_positions and 2 in marker_positions:
+            # Fallback : 1 et 2 (Diagonale)
+            p1 = np.mean(marker_positions[1], axis=0)
+            p2 = np.mean(marker_positions[2], axis=0)
+            distance_px = np.linalg.norm(p2 - p1)
+            # Ajustement de la distance réelle pour la diagonale
+            known_distance_mm = known_distance_mm * np.sqrt(2)
+            used_pair = "1-2"
+        else:
+            print("⚠️ ArUco L-board: No valid pair found (0-1, 0-2, or 1-2)")
+            return None, None, None
+
         ratio_px_mm = distance_px / known_distance_mm
-        
-        # Pose 3D (optionnel)
-        pose_info = None
-        if 2 in marker_positions:
-            try:
-                object_points = np.array([
-                    [0, 0, 0],
-                    [known_distance_mm, 0, 0],
-                    [0, known_distance_mm, 0]
-                ], dtype=np.float32)
-                
-                marker2_center = np.mean(marker_positions[2], axis=0)
-                image_points = np.array([
-                    marker0_center, marker1_center, marker2_center
-                ], dtype=np.float32)
-                
-                image_size = gray.shape[::-1]
-                focal_length = max(image_size)
-                camera_matrix = np.array([
-                    [focal_length, 0, image_size[0]/2],
-                    [0, focal_length, image_size[1]/2],
-                    [0, 0, 1]
-                ], dtype=np.float32)
-                
-                dist_coeffs = np.zeros((4, 1))
-                success, rvec, tvec = cv2.solvePnP(
-                    object_points, image_points, camera_matrix, dist_coeffs
-                )
-                if success:
-                    pose_info = {'rvec': rvec, 'tvec': tvec, 'camera_matrix': camera_matrix}
-            except:
-                pass
         
         calibration_data = {
             'ratio_px_mm': ratio_px_mm,
             'marker_positions': marker_positions,
             'distance_px': distance_px,
             'known_distance_mm': known_distance_mm,
-            'pose_info': pose_info,
             'board_detected': True
         }
         
-        print(f"✅ ArUco L-board detected: {distance_px:.1f}px = {known_distance_mm}mm")
+        print(f"✅ ArUco L-board detected ({used_pair}): {distance_px:.1f}px = {known_distance_mm:.1f}mm")
         print(f"📏 Ratio: {ratio_px_mm:.3f} px/mm")
         
         return ratio_px_mm, calibration_data, marker_positions
+
+    def _predict_fine_foot(self, foot_crop, foot_mask_small, scale, crop_offset):
+        """
+        Segmentation Fine via SamPredictor avec points intelligents.
+        Reproduit la logique 'AutomaticMaskGenerator' mais ciblée et légère.
+        """
+        # 1. Image Encoder (lourd, mais fait une seule fois sur le crop)
+        self.predictor.set_image(foot_crop)
+        
+        h_crop, w_crop = foot_crop.shape[:2]
+        h_small, w_small = foot_mask_small.shape[:2]
+        crop_x1, crop_y1 = crop_offset
+        
+        points = []
+        labels = []
+        
+        # Grille 10x10 sur le crop (environ 100 points potentiels, filtrés par le masque coarse)
+        # Cela assure une couverture "jusqu'aux bords" comme demandé.
+        grid_steps = 10
+        xs = np.linspace(0, w_crop - 1, grid_steps)
+        ys = np.linspace(0, h_crop - 1, grid_steps)
+        
+        for x in xs:
+            for y in ys:
+                global_x = x + crop_x1
+                global_y = y + crop_y1
+                
+                # Conversion coordonnées vers masque small
+                sx = int(global_x * scale)
+                sy = int(global_y * scale)
+                
+                if 0 <= sx < w_small and 0 <= sy < h_small:
+                    # Si le point tombe dans le masque grossier -> Point Positif
+                    if foot_mask_small[sy, sx] > 0:
+                        points.append([x, y])
+                        labels.append(1)
+        
+        if not points:
+            # Fallback: centre du crop si échec alignement
+            points.append([w_crop/2, h_crop/2])
+            labels.append(1)
+
+        points_np = np.array(points)
+        labels_np = np.array(labels)
+        
+        # 3. Prédiction avec SamPredictor
+        # multimask_output=True laisse SAM proposer 3 variantes (Part, Whole, etc.)
+        masks, scores, logits = self.predictor.predict(
+            point_coords=points_np,
+            point_labels=labels_np,
+            multimask_output=True
+        )
+        
+        # On garde le masque avec le score de confiance le plus élevé
+        best_idx = np.argmax(scores)
+        best_mask = masks[best_idx]
+        
+        # Nettoyage morphologique rapide
+        mask_uint8 = (best_mask * 255).astype(np.uint8)
+        return self._clean_mask(mask_uint8)
 
     # ============================================================
     # C) SEGMENTATION + NETTOYAGE
     # ============================================================
     
-    def _identify_foot_and_card(self, masks, image):
-        """Identifie le pied et la carte de crédit parmi les masques SAM"""
+    def _identify_foot(self, masks, image):
+        """Identifie le pied parmi les masques SAM (simplifié, ArUco only)"""
         h, w = image.shape[:2]
         image_area = h * w
-        
         foot_candidates = []
-        card_candidates = []
         
-        # Collecter candidats carte
-        for mask_data in masks:
-            area_ratio = mask_data['area'] / image_area
-            if 0.005 <= area_ratio <= 0.15:
-                card_score = self._score_card_candidate(mask_data, h, w)
-                if card_score > 0:
-                    card_candidates.append((mask_data['segmentation'], card_score, mask_data))
-        
-        best_card = max(card_candidates, key=lambda x: x[1]) if card_candidates else None
-        card_mask = None
-        if best_card:
-            card_mask = (best_card[0] * 255).astype(np.uint8)
-        
-        # Collecter candidats pied
         for mask_data in masks:
             mask = mask_data['segmentation']
             area = mask_data['area']
@@ -253,13 +307,13 @@ class MobileSAMPodiatryPipeline:
             aspect_ratio = max(bbox_w, bbox_h) / min(bbox_w, bbox_h) if min(bbox_w, bbox_h) > 0 else 0
             
             if 0.08 <= area_ratio <= 0.45 and 1.8 <= aspect_ratio <= 4.5:
-                if self._is_foot_like(mask_data, h, w, card_mask=card_mask):
+                if self._is_foot_like(mask_data, h, w):
                     foot_score = self._score_foot_candidate(mask_data, h, w)
                     foot_candidates.append((mask, foot_score, mask_data))
         
         best_foot = max(foot_candidates, key=lambda x: x[1]) if foot_candidates else None
         
-        # Fallback si pas de pied trouvé
+        # Fallback si pas de pied trouvé (critères relaxés)
         if best_foot is None:
             for mask_data in masks:
                 mask = mask_data['segmentation']
@@ -275,14 +329,12 @@ class MobileSAMPodiatryPipeline:
                     foot_candidates.append((mask, foot_score * 0.9, mask_data))
             best_foot = max(foot_candidates, key=lambda x: x[1]) if foot_candidates else None
         
-        foot_mask = None
         if best_foot:
             foot_mask = (best_foot[0] * 255).astype(np.uint8)
-            foot_mask = self._clean_mask(foot_mask)
-        
-        return foot_mask, card_mask, None
+            return self._clean_mask(foot_mask)
+        return None
 
-    def _is_foot_like(self, mask_data, H, W, card_mask=None):
+    def _is_foot_like(self, mask_data, H, W):
         """Vérifie si un masque ressemble à un pied"""
         m = (mask_data['segmentation'] * 255).astype(np.uint8)
         x, y, w, h = mask_data['bbox']
@@ -304,10 +356,6 @@ class MobileSAMPodiatryPipeline:
         if flat < 0.12:
             return False
         
-        if card_mask is not None:
-            overlap = np.logical_and(m > 0, card_mask > 0).sum() / max((m > 0).sum(), 1)
-            if overlap > 0.05:
-                return False
         return True
     
     def _score_foot_candidate(self, mask_data, h, w):
@@ -345,29 +393,6 @@ class MobileSAMPodiatryPipeline:
         
         predicted_iou = mask_data.get('predicted_iou', 0)
         score += predicted_iou * 20
-        
-        return score
-    
-    def _score_card_candidate(self, mask_data, h, w):
-        """Score un candidat carte de crédit"""
-        bbox = mask_data['bbox']
-        bbox_w, bbox_h = bbox[2], bbox[3]
-        
-        if bbox_w == 0 or bbox_h == 0:
-            return 0
-        
-        candidate_ratio = max(bbox_w, bbox_h) / min(bbox_w, bbox_h)
-        ratio_diff = abs(candidate_ratio - CARD_ASPECT_RATIO)
-        
-        if ratio_diff > 0.3:
-            return 0
-        
-        score = 50
-        score += (1 - ratio_diff) * 30
-        
-        area_ratio = mask_data['area'] / (h * w)
-        if 0.03 <= area_ratio <= 0.10:
-            score += 20
         
         return score
     
@@ -542,47 +567,87 @@ class MobileSAMPodiatryPipeline:
         if not self.initialized:
             return {'error': "SAM non initialisé"}
 
-        # 1. Segmentation SAM
-        print("🤖 Segmentation SAM...")
-        masks = self.mask_generator.generate(image_rgb)
-        if not masks:
-            return {'error': "Aucun masque généré par SAM"}
+        # 1. Segmentation SAM (Stratégie Coarse-to-Fine)
+        print("🤖 Segmentation SAM (Mode Double Passe)...")
+        
+        # --- PASSE 1: COARSE (Image réduite) ---
+        target_dim = 1024
+        scale = target_dim / max(h, w)
+        new_w, new_h = int(w * scale), int(h * scale)
+        image_small = cv2.resize(image_rgb, (new_w, new_h))
+        
+        with torch.inference_mode():
+            masks_coarse = self.mask_generator_coarse.generate(image_small)
+            
+        if not masks_coarse:
+             return {'error': "Aucun masque généré (Passe 1)"}
+             
+        # Identifier pied sur basse résolution
+        foot_mask_small = self._identify_foot(masks_coarse, image_small)
+        
+        if foot_mask_small is None:
+             return {'error': "Pied non détecté (Passe 1)"}
+
+        # --- PASSE 2: FINE (Crop haute résolution) ---
+        # Calculer BBox du pied sur l'image originale
+        y_idx, x_idx = np.where(foot_mask_small > 0)
+        if len(y_idx) == 0:
+            return {'error': "Masque pied vide"}
+            
+        y_min, y_max = y_idx.min(), y_idx.max()
+        x_min, x_max = x_idx.min(), x_idx.max()
+        
+        # Remise à l'échelle
+        y_min_orig = int(y_min / scale)
+        y_max_orig = int(y_max / scale)
+        x_min_orig = int(x_min / scale)
+        x_max_orig = int(x_max / scale)
+        
+        # Marge de sécurité (15%)
+        margin_h = int((y_max_orig - y_min_orig) * 0.15)
+        margin_w = int((x_max_orig - x_min_orig) * 0.15)
+        
+        crop_y1 = max(0, y_min_orig - margin_h)
+        crop_y2 = min(h, y_max_orig + margin_h)
+        crop_x1 = max(0, x_min_orig - margin_w)
+        crop_x2 = min(w, x_max_orig + margin_w)
+        
+        foot_crop = image_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
+        print(f"🔍 Fine Pass Crop: {foot_crop.shape[1]}x{foot_crop.shape[0]} px")
+        
+        foot_mask = None
+        if foot_crop.size > 0:
+            try:
+                # Utilisation de SamPredictor avec points intelligents
+                foot_mask_fine = self._predict_fine_foot(
+                    foot_crop, 
+                    foot_mask_small, 
+                    scale, 
+                    (crop_x1, crop_y1)
+                )
+                
+                if foot_mask_fine is not None:
+                    # Reconstruire le masque complet
+                    foot_mask = np.zeros((h, w), dtype=np.uint8)
+                    foot_mask[crop_y1:crop_y2, crop_x1:crop_x2] = foot_mask_fine
+                else:
+                    print("⚠️ Echec Fine Pass: aucun masque retourné")
+            except Exception as e:
+                print(f"⚠️ Exception Fine Pass: {e}")
+
+        # Fallback: Upscale du masque grossier si le fin a échoué
+        if foot_mask is None:
+             print("⚠️ Utilisation du masque grossier (Upscaled)")
+             foot_mask = cv2.resize(foot_mask_small, (w, h), interpolation=cv2.INTER_NEAREST)
 
         # 2. Calibration
         print("🎯 Calibration (ArUco / Carte)...")
         ratio_px_mm, calibration_data, aruco_markers = self._detect_aruco_l_board(image_rgb)
-        
-        # ... (Tentatives robustesse ArUco ajoutées précédemment)
-        # Je réinclus le bloc calibration complet pour être sûr du contexte de l'edit si nécessaire, 
-        # mais ici je vais cibler _measure_top_view_data call plus bas.
-        
-        # ... (skip calibration details for brevity in search match, assume context matches)
 
-        calibration_method = "aruco" if ratio_px_mm else None
-        
         if not ratio_px_mm:
-            # Fallback Carte
-            print("📏 Fallback: Détection carte de crédit...")
-            foot_mask, card_mask, _ = self._identify_foot_and_card(masks, image_rgb)
-            if card_mask is not None:
-                 # ... (fallback code)
-                 contours, _ = cv2.findContours(card_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                 if contours:
-                    card_contour = max(contours, key=cv2.contourArea)
-                    rect = cv2.minAreaRect(card_contour)
-                    card_px = max(rect[1])
-                    ratio_px_mm = card_px / CREDIT_CARD_WIDTH_MM
-                    calibration_method = "credit_card"
-                    calibration_data = {'ratio_px_mm': ratio_px_mm, 'board_detected': False}
-                    print(f"✅ Carte détectée. Ratio: {ratio_px_mm:.3f} px/mm")
-
-            if not ratio_px_mm:
-                 return {'error': "Aucune référence (ArUco ou Carte) détectée"}
-
-        # 3. Identification Pied
-        foot_mask, _, _ = self._identify_foot_and_card(masks, image_rgb)
-        if foot_mask is None:
-            return {'error': "Pied non détecté"}
+            return {'error': "ArUco non détecté - calibration impossible"}
+        
+        calibration_method = "aruco"
 
         # 4. Nettoyage spécifique
         if view_type == 'side':
@@ -610,7 +675,8 @@ class MobileSAMPodiatryPipeline:
 
         # 6. Debug
         if debug:
-            self._save_debug_images(image_rgb, foot_mask, aruco_markers, measurements, calibration_data)
+            debug_path = self._save_debug_images(image_rgb, foot_mask, aruco_markers, measurements, calibration_data)
+            measurements['debug_image_path'] = debug_path
 
         return measurements
 
@@ -620,7 +686,10 @@ class MobileSAMPodiatryPipeline:
     
     def _save_debug_images(self, image, foot_mask, aruco_markers, measurements, calibration_data):
         """Sauvegarde les images de debug avec points dessinés"""
-        debug_dir = f"output/debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        import uuid
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        unique_id = str(uuid.uuid4())[:8]
+        debug_dir = f"output/debug_{timestamp}_{unique_id}"
         os.makedirs(debug_dir, exist_ok=True)
         
         vis = image.copy()
@@ -671,126 +740,6 @@ class MobileSAMPodiatryPipeline:
                     f.write(f"- {key}: {value}\n")
         
         print(f"📁 Debug saved to: {debug_dir}")
+        return f"{debug_dir}/calibration_debug.jpg"
 
-
-# ============================================================
-# FONCTIONS UTILITAIRES
-# ============================================================
-
-def quick_measure(image_path, view_type='side'):
-    """Mesure rapide pour intégration mobile"""
-    pipeline = MobileSAMPodiatryPipeline()
-    
-    if not pipeline.initialized:
-        return {'error': 'Pipeline non initialisé - SAM requis'}
-    
-    if view_type == 'top':
-        return pipeline.process_top_view(image_path, debug=False)
-    else:
-        return pipeline.process_side_view(image_path, debug=False)
-
-
-def batch_process_folder(folder_path, output_csv=None, view_type='side'):
-    """Traite tous les images d'un dossier"""
-    import glob
-    import pandas as pd
-    
-    pipeline = MobileSAMPodiatryPipeline()
-    
-    if not pipeline.initialized:
-        print("❌ Pipeline non initialisé")
-        return
-    
-    patterns = ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']
-    image_files = []
-    for pattern in patterns:
-        image_files.extend(glob.glob(os.path.join(folder_path, pattern)))
-    
-    if not image_files:
-        print(f"❌ Aucune image trouvée dans {folder_path}")
-        return
-    
-    print(f"📁 {len(image_files)} images à traiter ({view_type})")
-    
-    results = []
-    
-    for i, image_path in enumerate(image_files, 1):
-        print(f"\n[{i}/{len(image_files)}] {os.path.basename(image_path)}")
-        
-        try:
-            if view_type == 'top':
-                measurements = pipeline.process_top_view(image_path, debug=True)
-            else:
-                measurements = pipeline.process_side_view(image_path, debug=True)
-            
-            if 'error' not in measurements:
-                res = {'filename': os.path.basename(image_path)}
-                res.update(measurements)
-                results.append(res)
-                
-                if view_type == 'side':
-                    print(f"✅ OK: Longueur {measurements.get('length_cm')}cm")
-                else:
-                    print(f"✅ OK: Largeur {measurements.get('width_cm')}cm")
-            else:
-                print(f"❌ Erreur: {measurements['error']}")
-                
-        except Exception as e:
-            print(f"❌ Exception: {e}")
-    
-    if results:
-        df = pd.DataFrame(results)
-        
-        if output_csv:
-            df.to_csv(output_csv, index=False)
-            print(f"\n📊 Résultats sauvegardés: {output_csv}")
-
-        
-        print("\n📊 STATISTIQUES:")
-        print(f"Images traitées: {len(results)}/{len(image_files)}")
-        print(f"Longueur moyenne: {df['length_cm'].mean():.1f} cm")
-        print(f"Largeur moyenne: {df['width_cm'].mean():.1f} cm")
-
-
-def validate_setup():
-    """Vérifie que tout est correctement installé"""
-    print("🔍 Vérification de l'installation...\n")
-    
-    import sys
-    print(f"✓ Python {sys.version.split()[0]}")
-    
-    packages = {
-        'cv2': 'opencv-python',
-        'numpy': 'numpy',
-        'torch': 'torch',
-        'segment_anything': 'segment-anything',
-        'ezdxf': 'ezdxf'
-    }
-    
-    missing = []
-    
-    for module, package in packages.items():
-        try:
-            __import__(module)
-            print(f"✓ {package} installé")
-        except ImportError:
-            print(f"✗ {package} manquant")
-            missing.append(package)
-    
-    if missing:
-        print(f"\n⚠️  Installer les packages manquants:")
-        print(f"pip install {' '.join(missing)}")
-        return False
-    
-    try:
-        import torch
-        if torch.cuda.is_available():
-            print(f"✓ CUDA disponible ({torch.cuda.get_device_name(0)})")
-        else:
-            print("ℹ️  CUDA non disponible - utilisation CPU")
-    except:
-        pass
-    
-    print("\n✅ Installation correcte!")
-    return True
 

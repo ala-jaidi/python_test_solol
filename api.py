@@ -4,15 +4,41 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
+from contextlib import asynccontextmanager
 import shutil
 import os
 import uuid
+import asyncio
 from mobile_sam_podiatry import MobileSAMPodiatryPipeline
+
+# Global variable to hold the pipeline
+pipeline: Optional[MobileSAMPodiatryPipeline] = None
+# Lock to ensure sequential processing of heavy model tasks
+processing_lock = asyncio.Lock()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for FastAPI.
+    Handles startup and shutdown events.
+    """
+    global pipeline
+    print("🚀 Initializing SAM Model...")
+    # Load the model once at startup
+    pipeline = MobileSAMPodiatryPipeline(model_type="vit_b")
+    print("✅ SAM Model Ready")
+    
+    yield
+    
+    # Clean up resources on shutdown
+    print("🛑 Shutting down SAM Model...")
+    pipeline = None
 
 app = FastAPI(
     title="Podiatry Foot Measurement API",
     description="API for measuring foot dimensions from photos for Flutter mobile app.",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 # CORS for Flutter app
@@ -33,15 +59,11 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Mount output directory to serve debug images
 app.mount("/files", StaticFiles(directory=OUTPUT_DIR), name="files")
 
-# Initialize Pipeline (Global instance to avoid reloading model)
-print("🚀 Initializing SAM Model...")
-pipeline = MobileSAMPodiatryPipeline(model_type="vit_b")
-print("✅ SAM Model Ready")
 
 
 # ============== FLUTTER MOBILE ROUTES ==============
 
-@app.post("/measure/top")
+@app.post("/measure/top/")
 async def measure_top_view(
     image: UploadFile = File(...),
     foot_side: str = Form("right")
@@ -63,10 +85,12 @@ async def measure_top_view(
         with open(image_path, "wb") as buffer:
             shutil.copyfileobj(image.file, buffer)
         
-        if not pipeline.initialized:
+        if pipeline is None or not pipeline.initialized:
             raise HTTPException(status_code=500, detail="Model not initialized")
         
-        result = pipeline.process_top_view(image_path, debug=True, foot_side=foot_side)
+        # Acquire lock to ensure sequential processing of heavy model inference
+        async with processing_lock:
+            result = pipeline.process_top_view(image_path, debug=True, foot_side=foot_side)
         
         if 'error' in result:
             return JSONResponse(status_code=400, content={
@@ -75,13 +99,21 @@ async def measure_top_view(
                 "foot_side": foot_side
             })
         
-        # Trouver le dossier debug le plus récent
-        import glob
-        debug_dirs = sorted(glob.glob(os.path.join(OUTPUT_DIR, "debug_*")), reverse=True)
+        # URL de l'image de debug
         debug_image_url = None
-        if debug_dirs:
-            latest_debug = os.path.basename(debug_dirs[0])
-            debug_image_url = f"/files/{latest_debug}/calibration_debug.jpg"
+        if 'debug_image_path' in result:
+             # Convert path "output/debug_.../img.jpg" to url "/files/debug_.../img.jpg"
+             relative_path = os.path.relpath(result['debug_image_path'], OUTPUT_DIR)
+             # Ensure forward slashes for URL
+             relative_path = relative_path.replace("\\", "/")
+             debug_image_url = f"/files/{relative_path}"
+        else:
+            # Fallback (legacy)
+            import glob
+            debug_dirs = sorted(glob.glob(os.path.join(OUTPUT_DIR, "debug_*")), reverse=True)
+            if debug_dirs:
+                latest_debug = os.path.basename(debug_dirs[0])
+                debug_image_url = f"/files/{latest_debug}/calibration_debug.jpg"
         
         # URL du fichier DXF
         dxf_url = None
@@ -107,7 +139,7 @@ async def measure_top_view(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/measure/side")
+@app.post("/measure/side/")
 async def measure_side_view(
     image: UploadFile = File(...),
     foot_side: str = Form("right")
@@ -129,11 +161,13 @@ async def measure_side_view(
         with open(image_path, "wb") as buffer:
             shutil.copyfileobj(image.file, buffer)
         
-        if not pipeline.initialized:
+        if pipeline is None or not pipeline.initialized:
             raise HTTPException(status_code=500, detail="Model not initialized")
         
+        # Acquire lock to ensure sequential processing of heavy model inference
         # Utilise process_side_view pour avoir longueur uniquement
-        result = pipeline.process_side_view(image_path, debug=True, foot_side=foot_side)
+        async with processing_lock:
+            result = pipeline.process_side_view(image_path, debug=True, foot_side=foot_side)
         
         if 'error' in result:
             return JSONResponse(status_code=400, content={
@@ -142,13 +176,21 @@ async def measure_side_view(
                 "foot_side": foot_side
             })
         
-        # Trouver le dossier debug le plus récent
-        import glob
-        debug_dirs = sorted(glob.glob(os.path.join(OUTPUT_DIR, "debug_*")), reverse=True)
+        # URL de l'image de debug
         debug_image_url = None
-        if debug_dirs:
-            latest_debug = os.path.basename(debug_dirs[0])
-            debug_image_url = f"/files/{latest_debug}/calibration_debug.jpg"
+        if 'debug_image_path' in result:
+             # Convert path "output/debug_.../img.jpg" to url "/files/debug_.../img.jpg"
+             relative_path = os.path.relpath(result['debug_image_path'], OUTPUT_DIR)
+             # Ensure forward slashes for URL
+             relative_path = relative_path.replace("\\", "/")
+             debug_image_url = f"/files/{relative_path}"
+        else:
+            # Fallback (legacy)
+            import glob
+            debug_dirs = sorted(glob.glob(os.path.join(OUTPUT_DIR, "debug_*")), reverse=True)
+            if debug_dirs:
+                latest_debug = os.path.basename(debug_dirs[0])
+                debug_image_url = f"/files/{latest_debug}/calibration_debug.jpg"
         
         # URL du fichier DXF
         dxf_url = None
@@ -189,7 +231,7 @@ class CompleteMeasurementRequest(BaseModel):
     right_foot: Optional[FootMeasurement] = None
 
 
-@app.post("/measure/complete")
+@app.post("/measure/complete/")
 async def complete_measurement(data: CompleteMeasurementRequest):
     """
     ✅ Résultats finaux - Reçoit les mesures des deux pieds
