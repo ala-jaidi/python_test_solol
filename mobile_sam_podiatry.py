@@ -4,13 +4,14 @@
 import os
 
 # Optimisation threads CPU (A definir avant les autres imports)
-os.environ["OMP_NUM_THREADS"] = "4"
-os.environ["MKL_NUM_THREADS"] = "4"
+_NUM_THREADS = int(os.environ.get("OMP_NUM_THREADS", "4"))
+os.environ.setdefault("OMP_NUM_THREADS", str(_NUM_THREADS))
+os.environ.setdefault("MKL_NUM_THREADS", str(_NUM_THREADS))
 
 import cv2
 import numpy as np
 import torch
-torch.set_num_threads(4)
+torch.set_num_threads(_NUM_THREADS)
 from datetime import datetime
 from utils import keep_foot_only
 from dxf_export import DXFExporter
@@ -28,8 +29,8 @@ except ImportError:
     print("⚠️ SAM non disponible - installer avec: pip install segment-anything")
 
 # ArUco L-shaped board configuration
-ARUCO_L_BOARD_SIZE_MM = 60.0
-ARUCO_L_BOARD_SEPARATION_MM = 12.0
+ARUCO_L_BOARD_SIZE_MM = 100.0
+ARUCO_L_BOARD_SEPARATION_MM = 20.0
 ARUCO_DICT = cv2.aruco.DICT_6X6_250
 
 
