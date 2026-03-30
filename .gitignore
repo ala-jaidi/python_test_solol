@@ -1,13 +1,27 @@
+# Python
 __pycache__/
 *.pyc
-*.jpg
-*.jpeg
-*.png
-*.bmp
-*.pth
+
+# Model files
 *.onnx
-output/
-data/
+*.pth
+*.pt
+
+# Runtime directories
 uploads/
+output/
+models/
+
+# Legacy directories (no longer part of project)
 sam_mobile/
 onnx_models/
+data/
+flutter_cpp/
+client_downloads/
+aruco_boards/
+
+# OS
+.DS_Store
+
+# IDE
+.claude/

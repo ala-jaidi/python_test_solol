@@ -13,8 +13,8 @@ import numpy as np
 import torch
 torch.set_num_threads(_NUM_THREADS)
 from datetime import datetime
-from utils import keep_foot_only
-from dxf_export import DXFExporter
+from app.utils import keep_foot_only
+from app.dxf_export import DXFExporter
 
 # ============================================================
 # A) CHARGEMENT / SAM
@@ -88,7 +88,7 @@ class MobileSAMPodiatryPipeline:
     
     def _get_or_download_checkpoint(self):
         """Télécharge le checkpoint SAM si nécessaire"""
-        checkpoint_dir = "sam_mobile"
+        checkpoint_dir = "models"
         os.makedirs(checkpoint_dir, exist_ok=True)
         
         checkpoint_path = f"{checkpoint_dir}/sam_{self.model_type}_mobile.pth"

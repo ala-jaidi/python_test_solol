@@ -1,74 +1,85 @@
-# Podiatry Foot Measurement (SAM + ArUco)
-Mesures podologiques à partir de photos (vue dessus + profil) avec segmentation **Segment Anything (SAM)**, calibration **ArUco** (prioritaire) avec fallback **carte bancaire**, et export **DXF**.
+# Podiatry Foot Measurement API
 
-## Fonctionnalités
-- **Segmentation**: détection/segmentation du pied avec SAM.
-- **Calibration**:
-  - **ArUco L-board** (recommandé)
-  - fallback **carte bancaire ISO/IEC 7810 ID-1** si ArUco non détecté
-- **Mesures**:
-  - vue unique: longueur, largeur, surface, périmètre, ratio L/l
-  - mode hybride (2 photos): + hauteur/angle de voûte, angle des orteils
-- **Exports**: images debug + **DXF** (`ezdxf`).
-- **API**: FastAPI (`POST /measure`) + accès fichiers via `/files/...`.
+FastAPI backend for measuring foot dimensions from photos using **Segment Anything (SAM)** segmentation and **ArUco** marker calibration, with **DXF** export for orthopedic insole manufacturing.
+
+## Features
+
+- **Segmentation** — Automatic foot detection with SAM (vit_b)
+- **Calibration** — ArUco L-board markers for real-world scale
+- **Measurements** — Length, width, toe angle from top and side views
+- **DXF Export** — Professional contour export for CAD/CAM workflows
+- **REST API** — FastAPI endpoints for Flutter mobile app integration
+
+## Project Structure
+
+```
+├── app/
+│   ├── __init__.py
+│   ├── api.py                  # FastAPI routes and server
+│   ├── mobile_sam_podiatry.py  # SAM segmentation + measurement pipeline
+│   ├── utils.py                # Image processing utilities
+│   └── dxf_export.py           # DXF file generation
+├── models/                     # SAM weights (auto-downloaded, gitignored)
+├── render.yaml                 # Render deployment blueprint
+├── requirements.txt            # Python dependencies
+├── LICENSE
+└── README.md
+```
 
 ## Installation
+
 ```bash
 pip install -r requirements.txt
 ```
 
-Notes:
-- Le modèle SAM peut être téléchargé automatiquement au premier lancement (internet requis).
-- `torch` utilisera CPU/GPU selon ta machine.
+> The SAM model (~375 MB) is downloaded automatically on first startup.
 
-## Utilisation (CLI)
-Point d’entrée: `main.py`.
+## Run Locally
 
-### Vérifier l’installation
 ```bash
-python main.py --validate
+uvicorn app.api:app --host 0.0.0.0 --port 8000
 ```
 
-### Mesurer une image (vue unique)
-```bash
-python main.py path/to/photo.jpg
-python main.py path/to/photo.jpg --debug
+The API docs are available at `http://localhost:8000/docs`.
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Health check |
+| `POST` | `/measure/top/` | Top view — width + toe angle |
+| `POST` | `/measure/side/` | Side view — heel-to-toe length |
+| `POST` | `/measure/complete/` | Final measurements + shoe size |
+
+### POST /measure/top/ and /measure/side/
+
+Multipart form data:
+- **image** (file) — Photo with ArUco L-board visible
+- **foot_side** (string) — `"left"` or `"right"`
+
+### POST /measure/complete/
+
+JSON body:
+```json
+{
+  "left_foot":  { "width_cm": 9.5, "length_cm": 26.0, "toe_angle_deg": 15.0 },
+  "right_foot": { "width_cm": 9.3, "length_cm": 25.8, "toe_angle_deg": 14.5 }
+}
 ```
 
-### Mesure hybride (vue dessus + profil)
-```bash
-python main.py --hybrid top.jpg side.jpg --side right
-python main.py --hybrid top.jpg side.jpg --side left --debug
-```
+## Deploy on Render
 
-### Traitement batch
-```bash
-python main.py --batch path/to/folder --output results.csv
-```
+This project includes a `render.yaml` blueprint for one-click deployment:
 
-## Utilisation (API)
-Démarrer le serveur:
-```bash
-uvicorn api:app --reload --port 8000
-```
+1. Push this repo to GitHub
+2. Go to [Render Dashboard](https://dashboard.render.com) → **New Blueprint**
+3. Select the repository and branch `main`
+4. Render will auto-detect `render.yaml` and configure the service
 
-### Endpoint
-- `POST /measure` (multipart):
-  - `top_view`: image vue dessus
-  - `side_view`: image profil
-  - `foot_side`: `right` (défaut) ou `left`
+> **Note:** The Render Starter plan ($7/mo) is recommended. A persistent disk stores the SAM model so it only downloads once.
 
-### Fichiers générés
-Les fichiers générés (DXF, images debug, etc.) sont servis via:
-- `GET /files/...`
+## Runtime Directories (gitignored)
 
-## Dossiers de sortie
-- `output/`: exports DXF et images debug
-- `uploads/`: images uploadées via l’API
-
-## Structure du projet
-- `mobile_sam_podiatry.py`: pipeline principal (`MobileSAMPodiatryPipeline`)
-- `main.py`: CLI
-- `api.py`: API FastAPI
-- `dxf_export.py`: génération DXF
-- `utils.py`: utilitaires
+- `models/` — SAM checkpoint weights
+- `uploads/` — Uploaded images (temporary)
+- `output/` — Debug images and DXF exports

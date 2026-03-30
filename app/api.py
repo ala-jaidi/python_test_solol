@@ -9,7 +9,7 @@ import shutil
 import os
 import uuid
 import asyncio
-from mobile_sam_podiatry import MobileSAMPodiatryPipeline
+from app.mobile_sam_podiatry import MobileSAMPodiatryPipeline
 
 # Global variable to hold the pipeline
 pipeline: Optional[MobileSAMPodiatryPipeline] = None
